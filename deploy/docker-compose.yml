@@ -1,49 +1,17 @@
 version: '3.8'
 
 services:
-  openai-proxy:
-    build:
-      context: .
-      dockerfile: Dockerfile.python.optimized
-    container_name: openai-proxy-python
+  api-server:
+    build: .
+    container_name: z-ai-api-server
     ports:
       - "8080:8080"
     environment:
-      # 可以通过环境变量覆盖配置
       - DEBUG_MODE=false
-      - PORT=8080
-      # 注意：敏感信息应该使用 secrets 或 env 文件
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/v1/models"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
-    networks:
-      - proxy-network
-
-  # 可选：添加一个简单的web界面用于测试
-  web-test:
-    image: nginx:alpine
-    container_name: proxy-web-test
-    ports:
-      - "8081:80"
-    volumes:
-      - ./test-page:/usr/share/nginx/html:ro
-    depends_on:
-      - openai-proxy
-    networks:
-      - proxy-network
-    profiles:
-      - test-ui
-
-networks:
-  proxy-network:
-    driver: bridge
-
-# 使用说明：
-# 1. 基本启动：docker-compose up -d
-# 2. 带测试界面：docker-compose --profile test-ui up -d
-# 3. 查看日志：docker-compose logs -f
-# 4. 停止服务：docker-compose down
+      start_period: 10s
