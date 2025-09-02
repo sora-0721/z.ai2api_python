@@ -1,13 +1,13 @@
-
+# -*- coding: utf-8 -*-
 
 import json
 import re
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Union, AsyncGenerator
+from typing import Dict, List, Optional, Any, Union, Generator
 from urllib.parse import urljoin
 
-import httpx
+import requests
 from fastapi import FastAPI, Request, Response, HTTPException, Header
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -36,6 +36,156 @@ ORIGIN_BASE = "https://chat.z.ai"
 
 # 匿名token开关
 ANON_TOKEN_ENABLED = True
+
+
+# SSE 解析生成器
+class SSEParser:
+    """统一的 SSE (Server-Sent Events) 解析生成器"""
+    
+    def __init__(self, response, debug_mode=False):
+        """初始化 SSE 解析器
+        
+        Args:
+            response: requests.Response 对象，需要设置 stream=True
+            debug_mode: 是否启用调试模式
+        """
+        self.response = response
+        self.debug_mode = debug_mode
+        self.buffer = ""
+        self.line_count = 0
+    
+    def debug_log(self, format_str: str, *args):
+        """调试日志"""
+        if self.debug_mode:
+            print(f"[SSE_PARSER] {format_str % args}")
+    
+    def iter_events(self):
+        """生成器，逐个产生 SSE 事件
+        
+        Yields:
+            dict: 解析后的 SSE 事件数据
+        """
+        self.debug_log("开始解析 SSE 流")
+        
+        for line in self.response.iter_lines():
+            self.line_count += 1
+            
+            # 处理空行
+            if not line:
+                continue
+            
+            # 解码字节串
+            if isinstance(line, bytes):
+                try:
+                    line = line.decode('utf-8')
+                except UnicodeDecodeError:
+                    self.debug_log(f"第{self.line_count}行解码失败，跳过")
+                    continue
+            
+            # 处理注释行
+            if line.startswith(':'):
+                continue
+            
+            # 解析字段
+            if ':' in line:
+                field, value = line.split(':', 1)
+                field = field.strip()
+                value = value.lstrip()  # 去掉冒号后的空格
+                
+                if field == 'data':
+                    # 处理数据字段
+                    self.debug_log(f"收到数据 (第{self.line_count}行): {value}")
+                    
+                    # 尝试解析 JSON
+                    try:
+                        data = json.loads(value)
+                        yield {
+                            'type': 'data',
+                            'data': data,
+                            'raw': value
+                        }
+                    except json.JSONDecodeError:
+                        # 不是 JSON，作为原始数据返回
+                        yield {
+                            'type': 'data',
+                            'data': value,
+                            'raw': value,
+                            'is_json': False
+                        }
+                
+                elif field == 'event':
+                    # 处理事件类型
+                    yield {
+                        'type': 'event',
+                        'event': value
+                    }
+                
+                elif field == 'id':
+                    # 处理事件 ID
+                    yield {
+                        'type': 'id',
+                        'id': value
+                    }
+                
+                elif field == 'retry':
+                    # 处理重试时间
+                    try:
+                        retry = int(value)
+                        yield {
+                            'type': 'retry',
+                            'retry': retry
+                        }
+                    except ValueError:
+                        self.debug_log(f"无效的 retry 值: {value}")
+    
+    def iter_data_only(self):
+        """生成器，只产生数据事件
+        
+        Yields:
+            dict: 仅包含数据的 SSE 事件
+        """
+        for event in self.iter_events():
+            if event['type'] == 'data':
+                yield event
+    
+    def iter_json_data(self, model_class=None):
+        """生成器，只产生 JSON 数据事件
+        
+        Args:
+            model_class: 可选的 Pydantic 模型类，用于验证数据
+            
+        Yields:
+            dict: 包含解析后的 JSON 数据的事件
+        """
+        for event in self.iter_events():
+            if event['type'] == 'data' and event.get('is_json', True):
+                try:
+                    if model_class:
+                        # 使用 Pydantic 模型验证
+                        data = model_class.model_validate_json(event['raw'])
+                        yield {
+                            'type': 'data',
+                            'data': data,
+                            'raw': event['raw']
+                        }
+                    else:
+                        yield event
+                except Exception as e:
+                    self.debug_log(f"数据验证失败: {e}")
+                    continue
+    
+    def close(self):
+        """关闭响应连接"""
+        if hasattr(self.response, 'close'):
+            self.response.close()
+    
+    def __enter__(self):
+        """支持上下文管理器"""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """退出上下文时自动关闭连接"""
+        self.close()
 
 
 # 数据结构定义
@@ -151,32 +301,31 @@ def debug_log(format_str: str, *args):
 
 
 # 获取匿名token
-async def get_anonymous_token() -> str:
+def get_anonymous_token() -> str:
     """获取匿名token（每次对话使用不同token，避免共享记忆）"""
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        headers = {
-            "User-Agent": BROWSER_UA,
-            "Accept": "*/*",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "X-FE-Version": X_FE_VERSION,
-            "sec-ch-ua": SEC_CH_UA,
-            "sec-ch-ua-mobile": SEC_CH_UA_MOB,
-            "sec-ch-ua-platform": SEC_CH_UA_PLAT,
-            "Origin": ORIGIN_BASE,
-            "Referer": f"{ORIGIN_BASE}/",
-        }
-        
-        response = await client.get(f"{ORIGIN_BASE}/api/v1/auths/", headers=headers)
-        
-        if response.status_code != 200:
-            raise Exception(f"anon token status={response.status_code}")
-        
-        data = response.json()
-        token = data.get("token")
-        if not token:
-            raise Exception("anon token empty")
-        
-        return token
+    headers = {
+        "User-Agent": BROWSER_UA,
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "X-FE-Version": X_FE_VERSION,
+        "sec-ch-ua": SEC_CH_UA,
+        "sec-ch-ua-mobile": SEC_CH_UA_MOB,
+        "sec-ch-ua-platform": SEC_CH_UA_PLAT,
+        "Origin": ORIGIN_BASE,
+        "Referer": f"{ORIGIN_BASE}/",
+    }
+    
+    response = requests.get(f"{ORIGIN_BASE}/api/v1/auths/", headers=headers, timeout=10.0)
+    
+    if response.status_code != 200:
+        raise Exception(f"anon token status={response.status_code}")
+    
+    data = response.json()
+    token = data.get("token")
+    if not token:
+        raise Exception("anon token empty")
+    
+    return token
 
 
 # CORS中间件
@@ -192,8 +341,7 @@ async def add_cors_headers(request: Request, call_next):
 
 # OPTIONS处理器
 @app.options("/")
-@app.options("/v1/{path:path}")
-async def handle_options(path: str = ""):
+async def handle_options():
     return Response(status_code=200)
 
 
@@ -219,19 +367,19 @@ async def handle_models():
             ),
         ]
     )
-    return JSONResponse(content=response.model_dump(exclude_none=True))
+    return response
 
 
 # 聊天完成接口
 @app.post("/v1/chat/completions")
 async def handle_chat_completions(
     request: OpenAIRequest,
-    authorization: Optional[str] = Header(None)
+    authorization: str = Header(...)
 ):
     debug_log("收到chat completions请求")
     
     # 验证API Key
-    if not authorization or not authorization.startswith("Bearer "):
+    if not authorization.startswith("Bearer "):
         debug_log("缺少或无效的Authorization头")
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     
@@ -287,12 +435,9 @@ async def handle_chat_completions(
     auth_token = UPSTREAM_TOKEN
     if ANON_TOKEN_ENABLED:
         try:
-            token = await get_anonymous_token()
-            if token:
-                auth_token = token
-                debug_log(f"匿名token获取成功: {token[:10] if len(token) > 10 else token}...")
-            else:
-                debug_log("获取到的匿名token为空，使用固定token")
+            token = get_anonymous_token()
+            auth_token = token
+            debug_log(f"匿名token获取成功: {token[:10]}...")
         except Exception as e:
             debug_log(f"匿名token获取失败，回退固定token: {e}")
     
@@ -307,10 +452,10 @@ async def handle_chat_completions(
             }
         )
     else:
-        return await handle_non_stream_response(upstream_req, chat_id, auth_token)
+        return handle_non_stream_response(upstream_req, chat_id, auth_token)
 
 
-async def call_upstream_with_headers(upstream_req: UpstreamRequest, referer_chat_id: str, auth_token: str) -> httpx.Response:
+def call_upstream_with_headers(upstream_req: UpstreamRequest, referer_chat_id: str, auth_token: str) -> requests.Response:
     """调用上游API"""
     headers = {
         "Content-Type": "application/json",
@@ -327,14 +472,15 @@ async def call_upstream_with_headers(upstream_req: UpstreamRequest, referer_chat
     }
     
     debug_log(f"调用上游API: {UPSTREAM_URL}")
-    debug_log(f"上游请求体: {upstream_req.model_dump_json(exclude_none=True)}")
+    debug_log(f"上游请求体: {upstream_req.model_dump_json()}")
     
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            UPSTREAM_URL,
-            json=upstream_req.model_dump(exclude_none=True),
-            headers=headers
-        )
+    response = requests.post(
+        UPSTREAM_URL,
+        json=upstream_req.model_dump(exclude_none=True),
+        headers=headers,
+        timeout=60.0,
+        stream=True
+    )
     
     debug_log(f"上游响应状态: {response.status_code}")
     return response
@@ -361,22 +507,22 @@ def transform_thinking(s: str) -> str:
     return s.strip()
 
 
-async def handle_stream_response(upstream_req: UpstreamRequest, chat_id: str, auth_token: str) -> AsyncGenerator[str, None]:
+def handle_stream_response(upstream_req: UpstreamRequest, chat_id: str, auth_token: str):
     """处理流式响应"""
     debug_log(f"开始处理流式响应 (chat_id={chat_id})")
     
     try:
-        response = await call_upstream_with_headers(upstream_req, chat_id, auth_token)
+        response = call_upstream_with_headers(upstream_req, chat_id, auth_token)
     except Exception as e:
         debug_log(f"调用上游失败: {e}")
-        yield f"data: {{\"error\": \"Failed to call upstream\", \"type\": \"server_error\"}}\n\n"
+        yield "data: {\"error\": \"Failed to call upstream\"}\n\n"
         return
     
     if response.status_code != 200:
         debug_log(f"上游返回错误状态: {response.status_code}")
         if DEBUG_MODE:
             debug_log(f"上游错误响应: {response.text}")
-        yield f"data: {{\"error\": \"Upstream error\", \"type\": \"upstream_error\"}}\n\n"
+        yield "data: {\"error\": \"Upstream error\"}\n\n"
         return
     
     # 发送第一个chunk（role）
@@ -392,29 +538,13 @@ async def handle_stream_response(upstream_req: UpstreamRequest, chat_id: str, au
     )
     yield f"data: {first_chunk.model_dump_json()}\n\n"
     
-    # 读取上游SSE流
+    # 使用 SSE 解析器处理流
     debug_log("开始读取上游SSE流")
-    line_count = 0
     sent_initial_answer = False
     
-    try:
-        async for line in response.aiter_lines():
-            line_count += 1
-            
-            if not line.startswith("data: "):
-                continue
-            
-            data_str = line[6:]  # 去掉 "data: "
-            if not data_str:
-                continue
-            
-            debug_log(f"收到SSE数据 (第{line_count}行): {data_str}")
-            
-            try:
-                upstream_data = UpstreamData.model_validate_json(data_str)
-            except Exception as e:
-                debug_log(f"SSE数据解析失败: {e}")
-                continue
+    with SSEParser(response, debug_mode=DEBUG_MODE) as parser:
+        for event in parser.iter_json_data(UpstreamData):
+            upstream_data = event['data']
             
             # 错误检测
             if (upstream_data.error or 
@@ -453,8 +583,7 @@ async def handle_stream_response(upstream_req: UpstreamRequest, chat_id: str, au
                 
                 out = upstream_data.data.edit_content
                 if out:
-                    # 使用正则表达式分割，支持多行
-                    parts = re.split(r'</details>', out)
+                    parts = out.split("</details>")
                     if len(parts) > 1:
                         content = parts[1]
                         if content:
@@ -526,19 +655,16 @@ async def handle_stream_response(upstream_req: UpstreamRequest, chat_id: str, au
                 )
                 yield f"data: {end_chunk.model_dump_json()}\n\n"
                 yield "data: [DONE]\n\n"
-                debug_log(f"流式响应完成，共处理{line_count}行")
+                debug_log(f"流式响应完成")
                 break
-    except Exception as e:
-        debug_log(f"读取SSE流时发生错误: {e}")
-        yield f"data: {{\"error\": \"Stream reading error\", \"type\": \"stream_error\"}}\n\n"
 
 
-async def handle_non_stream_response(upstream_req: UpstreamRequest, chat_id: str, auth_token: str) -> JSONResponse:
+def handle_non_stream_response(upstream_req: UpstreamRequest, chat_id: str, auth_token: str) -> JSONResponse:
     """处理非流式响应"""
     debug_log(f"开始处理非流式响应 (chat_id={chat_id})")
     
     try:
-        response = await call_upstream_with_headers(upstream_req, chat_id, auth_token)
+        response = call_upstream_with_headers(upstream_req, chat_id, auth_token)
     except Exception as e:
         debug_log(f"调用上游失败: {e}")
         raise HTTPException(status_code=502, detail="Failed to call upstream")
@@ -553,19 +679,9 @@ async def handle_non_stream_response(upstream_req: UpstreamRequest, chat_id: str
     full_content = []
     debug_log("开始收集完整响应内容")
     
-    try:
-        async for line in response.aiter_lines():
-            if not line.startswith("data: "):
-                continue
-            
-            data_str = line[6:]
-            if not data_str:
-                continue
-            
-            try:
-                upstream_data = UpstreamData.model_validate_json(data_str)
-            except Exception:
-                continue
+    with SSEParser(response, debug_mode=DEBUG_MODE) as parser:
+        for event in parser.iter_json_data(UpstreamData):
+            upstream_data = event['data']
             
             if upstream_data.data.delta_content:
                 out = upstream_data.data.delta_content
@@ -579,9 +695,6 @@ async def handle_non_stream_response(upstream_req: UpstreamRequest, chat_id: str
             if upstream_data.data.done or upstream_data.data.phase == "done":
                 debug_log("检测到完成信号，停止收集")
                 break
-    except Exception as e:
-        debug_log(f"读取响应流时发生错误: {e}")
-        raise HTTPException(status_code=502, detail="Failed to read upstream response")
     
     final_content = "".join(full_content)
     debug_log(f"内容收集完成，最终长度: {len(final_content)}")
@@ -604,41 +717,15 @@ async def handle_non_stream_response(upstream_req: UpstreamRequest, chat_id: str
     )
     
     debug_log("非流式响应发送完成")
-    # 添加CORS头
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        "Access-Control-Allow-Credentials": "true"
-    }
-    return JSONResponse(
-        content=response_data.model_dump(exclude_none=True),
-        headers=headers
-    )
+    return JSONResponse(content=response_data.model_dump(exclude_none=True))
 
 
 # 根路径处理器
 @app.get("/")
 async def root():
     return {"message": "OpenAI Compatible API Server"}
-
-
-# 根路径处理器
-@app.get("/")
-async def root():
-    return {"message": "OpenAI Compatible API Server"}
-
-
-# 健康检查接口
-@app.get("/health")
-async def health_check():
-    return {"status": "ok", "timestamp": int(time.time())}
 
 
 if __name__ == "__main__":
     import uvicorn
-    print(f"OpenAI兼容API服务器启动在端口 {PORT}")
-    print(f"模型: {DEFAULT_MODEL_NAME}")
-    print(f"上游: {UPSTREAM_URL}")
-    print(f"Debug模式: {DEBUG_MODE}")
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=DEBUG_MODE)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
