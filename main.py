@@ -1,11 +1,18 @@
 # -*- coding: utf-8 -*-
 
+"""
+OpenAI Compatible API Server for Z.AI
+=====================================
+
+This module provides an OpenAI-compatible API server that forwards requests
+to the Z.AI chat service with proper authentication and response formatting.
+"""
+
 import json
 import re
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Union, Generator
-from urllib.parse import urljoin
+from typing import Dict, List, Optional, Any, Union, Generator, Tuple
 
 import requests
 from fastapi import FastAPI, Request, Response, HTTPException, Header
@@ -13,189 +20,53 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 
-# 配置常量
-UPSTREAM_URL = "https://chat.z.ai/api/chat/completions"
-DEFAULT_KEY = "sk-tbkFoKzk9a531YyUNNF5"
-UPSTREAM_TOKEN = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjMxNmJjYjQ4LWZmMmYtNGExNS04NTNkLWYyYTI5YjY3ZmYwZiIsImVtYWlsIjoiR3Vlc3QtMTc1NTg0ODU4ODc4OEBndWVzdC5jb20ifQ.PktllDySS3trlyuFpTeIZf-7hl8Qu1qYF3BxjgIul0BrNux2nX9hVzIjthLXKMWAf9V0qM8Vm_iyDqkjPGsaiQ"
-DEFAULT_MODEL_NAME = "GLM-4.5"
-THINKING_MODEL_NAME = "GLM-4.5-Thinking"
-SEARCH_MODEL_NAME = "GLM-4.5-Search"
-PORT = 8080
-DEBUG_MODE = True
+# =============================================================================
+# Configuration Constants
+# =============================================================================
 
-# 思考内容处理策略
-THINK_TAGS_MODE = "think"  # strip: 去除<details>标签；think: 转为<think>标签；raw: 保留原样
-
-# 伪装前端头部
-X_FE_VERSION = "prod-fe-1.0.70"
-BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0"
-SEC_CH_UA = '"Not;A=Brand";v="99", "Microsoft Edge";v="139", "Chromium";v="139"'
-SEC_CH_UA_MOB = "?0"
-SEC_CH_UA_PLAT = '"Windows"'
-ORIGIN_BASE = "https://chat.z.ai"
-
-# 匿名token开关
-ANON_TOKEN_ENABLED = True
-
-
-# SSE 解析生成器
-class SSEParser:
-    """统一的 SSE (Server-Sent Events) 解析生成器"""
+class Config:
+    """Centralized configuration constants"""
     
-    def __init__(self, response, debug_mode=False):
-        """初始化 SSE 解析器
-        
-        Args:
-            response: requests.Response 对象，需要设置 stream=True
-            debug_mode: 是否启用调试模式
-        """
-        self.response = response
-        self.debug_mode = debug_mode
-        self.buffer = ""
-        self.line_count = 0
+    # API Configuration
+    UPSTREAM_URL: str = "https://chat.z.ai/api/chat/completions"
+    DEFAULT_KEY: str = "sk-tbkFoKzk9a531YyUNNF5"
+    UPSTREAM_TOKEN: str = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjMxNmJjYjQ4LWZmMmYtNGExNS04NTNkLWYyYTI5YjY3ZmYwZiIsImVtYWlsIjoiR3Vlc3QtMTc1NTg0ODU4ODc4OEBndWVzdC5jb20ifQ.PktllDySS3trlyuFpTeIZf-7hl8Qu1qYF3BxjgIul0BrNux2nX9hVzIjthLXKMWAf9V0qM8Vm_iyDqkjPGsaiQ"
     
-    def debug_log(self, format_str: str, *args):
-        """调试日志"""
-        if self.debug_mode:
-            print(f"[SSE_PARSER] {format_str % args}")
+    # Model Configuration
+    DEFAULT_MODEL_NAME: str = "GLM-4.5"
+    THINKING_MODEL_NAME: str = "GLM-4.5-Thinking"
+    SEARCH_MODEL_NAME: str = "GLM-4.5-Search"
     
-    def iter_events(self):
-        """生成器，逐个产生 SSE 事件
-        
-        Yields:
-            dict: 解析后的 SSE 事件数据
-        """
-        self.debug_log("开始解析 SSE 流")
-        
-        for line in self.response.iter_lines():
-            self.line_count += 1
-            
-            # 处理空行
-            if not line:
-                continue
-            
-            # 解码字节串
-            if isinstance(line, bytes):
-                try:
-                    line = line.decode('utf-8')
-                except UnicodeDecodeError:
-                    self.debug_log(f"第{self.line_count}行解码失败，跳过")
-                    continue
-            
-            # 处理注释行
-            if line.startswith(':'):
-                continue
-            
-            # 解析字段
-            if ':' in line:
-                field, value = line.split(':', 1)
-                field = field.strip()
-                value = value.lstrip()  # 去掉冒号后的空格
-                
-                if field == 'data':
-                    # 处理数据字段
-                    self.debug_log(f"收到数据 (第{self.line_count}行): {value}")
-                    
-                    # 尝试解析 JSON
-                    try:
-                        data = json.loads(value)
-                        yield {
-                            'type': 'data',
-                            'data': data,
-                            'raw': value
-                        }
-                    except json.JSONDecodeError:
-                        # 不是 JSON，作为原始数据返回
-                        yield {
-                            'type': 'data',
-                            'data': value,
-                            'raw': value,
-                            'is_json': False
-                        }
-                
-                elif field == 'event':
-                    # 处理事件类型
-                    yield {
-                        'type': 'event',
-                        'event': value
-                    }
-                
-                elif field == 'id':
-                    # 处理事件 ID
-                    yield {
-                        'type': 'id',
-                        'id': value
-                    }
-                
-                elif field == 'retry':
-                    # 处理重试时间
-                    try:
-                        retry = int(value)
-                        yield {
-                            'type': 'retry',
-                            'retry': retry
-                        }
-                    except ValueError:
-                        self.debug_log(f"无效的 retry 值: {value}")
+    # Server Configuration
+    PORT: int = 8080
+    DEBUG_MODE: bool = True
     
-    def iter_data_only(self):
-        """生成器，只产生数据事件
-        
-        Yields:
-            dict: 仅包含数据的 SSE 事件
-        """
-        for event in self.iter_events():
-            if event['type'] == 'data':
-                yield event
+    # Feature Configuration
+    THINK_TAGS_MODE: str = "think"  # strip: 去除<details>标签；think: 转为<think>标签；raw: 保留原样
+    ANON_TOKEN_ENABLED: bool = True
     
-    def iter_json_data(self, model_class=None):
-        """生成器，只产生 JSON 数据事件
-        
-        Args:
-            model_class: 可选的 Pydantic 模型类，用于验证数据
-            
-        Yields:
-            dict: 包含解析后的 JSON 数据的事件
-        """
-        for event in self.iter_events():
-            if event['type'] == 'data' and event.get('is_json', True):
-                try:
-                    if model_class:
-                        # 使用 Pydantic 模型验证
-                        data = model_class.model_validate_json(event['raw'])
-                        yield {
-                            'type': 'data',
-                            'data': data,
-                            'raw': event['raw']
-                        }
-                    else:
-                        yield event
-                except Exception as e:
-                    self.debug_log(f"数据验证失败: {e}")
-                    continue
-    
-    def close(self):
-        """关闭响应连接"""
-        if hasattr(self.response, 'close'):
-            self.response.close()
-    
-    def __enter__(self):
-        """支持上下文管理器"""
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """退出上下文时自动关闭连接"""
-        self.close()
+    # Browser Headers
+    X_FE_VERSION: str = "prod-fe-1.0.70"
+    BROWSER_UA: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0"
+    SEC_CH_UA: str = '"Not;A=Brand";v="99", "Microsoft Edge";v="139", "Chromium";v="139"'
+    SEC_CH_UA_MOB: str = "?0"
+    SEC_CH_UA_PLAT: str = '"Windows"'
+    ORIGIN_BASE: str = "https://chat.z.ai"
 
 
-# 数据结构定义
+# =============================================================================
+# Data Models
+# =============================================================================
+
 class Message(BaseModel):
+    """Chat message model"""
     role: str
     content: str
     reasoning_content: Optional[str] = None
 
 
 class OpenAIRequest(BaseModel):
+    """OpenAI-compatible request model"""
     model: str
     messages: List[Message]
     stream: Optional[bool] = False
@@ -204,12 +75,14 @@ class OpenAIRequest(BaseModel):
 
 
 class ModelItem(BaseModel):
+    """Model information item"""
     id: str
     name: str
     owned_by: str
 
 
 class UpstreamRequest(BaseModel):
+    """Upstream service request model"""
     stream: bool
     model: str
     messages: List[Message]
@@ -226,12 +99,14 @@ class UpstreamRequest(BaseModel):
 
 
 class Delta(BaseModel):
+    """Stream delta model"""
     role: Optional[str] = None
     content: Optional[str] = None
     reasoning_content: Optional[str] = None
 
 
 class Choice(BaseModel):
+    """Response choice model"""
     index: int
     message: Optional[Message] = None
     delta: Optional[Delta] = None
@@ -239,12 +114,14 @@ class Choice(BaseModel):
 
 
 class Usage(BaseModel):
+    """Token usage statistics"""
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
 
 
 class OpenAIResponse(BaseModel):
+    """OpenAI-compatible response model"""
     id: str
     object: str
     created: int
@@ -254,15 +131,18 @@ class OpenAIResponse(BaseModel):
 
 
 class UpstreamError(BaseModel):
+    """Upstream error model"""
     detail: str
     code: int
 
 
 class UpstreamDataInner(BaseModel):
+    """Inner upstream data model"""
     error: Optional[UpstreamError] = None
 
 
 class UpstreamDataData(BaseModel):
+    """Upstream data content model"""
     delta_content: str = ""
     edit_content: str = ""
     phase: str = ""
@@ -273,12 +153,14 @@ class UpstreamDataData(BaseModel):
 
 
 class UpstreamData(BaseModel):
+    """Upstream data model"""
     type: str
     data: UpstreamDataData
     error: Optional[UpstreamError] = None
 
 
 class Model(BaseModel):
+    """Model information for listing"""
     id: str
     object: str = "model"
     created: int
@@ -286,83 +168,579 @@ class Model(BaseModel):
 
 
 class ModelsResponse(BaseModel):
+    """Models list response model"""
     object: str = "list"
     data: List[Model]
 
 
-# FastAPI应用
-app = FastAPI()
+# =============================================================================
+# SSE Parser
+# =============================================================================
+
+class SSEParser:
+    """Server-Sent Events parser for streaming responses"""
+    
+    def __init__(self, response: requests.Response, debug_mode: bool = False):
+        """Initialize SSE parser
+        
+        Args:
+            response: requests.Response object with stream=True
+            debug_mode: Enable debug logging
+        """
+        self.response = response
+        self.debug_mode = debug_mode
+        self.buffer = ""
+        self.line_count = 0
+    
+    def debug_log(self, format_str: str, *args) -> None:
+        """Log debug message if debug mode is enabled"""
+        if self.debug_mode:
+            print(f"[SSE_PARSER] {format_str % args}")
+    
+    def iter_events(self) -> Generator[Dict[str, Any], None, None]:
+        """Iterate over SSE events
+        
+        Yields:
+            dict: Parsed SSE event data
+        """
+        self.debug_log("开始解析 SSE 流")
+        
+        for line in self.response.iter_lines():
+            self.line_count += 1
+            
+            # Skip empty lines
+            if not line:
+                continue
+            
+            # Decode bytes
+            if isinstance(line, bytes):
+                try:
+                    line = line.decode('utf-8')
+                except UnicodeDecodeError:
+                    self.debug_log(f"第{self.line_count}行解码失败，跳过")
+                    continue
+            
+            # Skip comment lines
+            if line.startswith(':'):
+                continue
+            
+            # Parse field-value pairs
+            if ':' in line:
+                field, value = line.split(':', 1)
+                field = field.strip()
+                value = value.lstrip()
+                
+                if field == 'data':
+                    self.debug_log(f"收到数据 (第{self.line_count}行): {value}")
+                    
+                    # Try to parse JSON
+                    try:
+                        data = json.loads(value)
+                        yield {
+                            'type': 'data',
+                            'data': data,
+                            'raw': value
+                        }
+                    except json.JSONDecodeError:
+                        yield {
+                            'type': 'data',
+                            'data': value,
+                            'raw': value,
+                            'is_json': False
+                        }
+                
+                elif field == 'event':
+                    yield {'type': 'event', 'event': value}
+                
+                elif field == 'id':
+                    yield {'type': 'id', 'id': value}
+                
+                elif field == 'retry':
+                    try:
+                        retry = int(value)
+                        yield {'type': 'retry', 'retry': retry}
+                    except ValueError:
+                        self.debug_log(f"无效的 retry 值: {value}")
+    
+    def iter_data_only(self) -> Generator[Dict[str, Any], None, None]:
+        """Iterate only over data events"""
+        for event in self.iter_events():
+            if event['type'] == 'data':
+                yield event
+    
+    def iter_json_data(self, model_class: Optional[type] = None) -> Generator[Dict[str, Any], None, None]:
+        """Iterate only over JSON data events with optional validation
+        
+        Args:
+            model_class: Optional Pydantic model class for validation
+            
+        Yields:
+            dict: JSON data events
+        """
+        for event in self.iter_events():
+            if event['type'] == 'data' and event.get('is_json', True):
+                try:
+                    if model_class:
+                        data = model_class.model_validate_json(event['raw'])
+                        yield {
+                            'type': 'data',
+                            'data': data,
+                            'raw': event['raw']
+                        }
+                    else:
+                        yield event
+                except Exception as e:
+                    self.debug_log(f"数据验证失败: {e}")
+                    continue
+    
+    def close(self) -> None:
+        """Close the response connection"""
+        if hasattr(self.response, 'close'):
+            self.response.close()
+    
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit"""
+        self.close()
 
 
-# 调试日志函数
-def debug_log(format_str: str, *args):
-    if DEBUG_MODE:
-        print(f"[DEBUG] {format_str % args}")
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+def debug_log(message: str, *args) -> None:
+    """Log debug message if debug mode is enabled"""
+    if Config.DEBUG_MODE:
+        print(f"[DEBUG] {message % args}")
 
 
-# 获取匿名token
-def get_anonymous_token() -> str:
-    """获取匿名token（每次对话使用不同token，避免共享记忆）"""
+def generate_request_ids() -> Tuple[str, str]:
+    """Generate unique IDs for chat and message"""
+    timestamp = int(time.time())
+    chat_id = f"{timestamp * 1000}-{timestamp}"
+    msg_id = str(timestamp * 1000000)
+    return chat_id, msg_id
+
+
+def get_browser_headers(referer_chat_id: str = "") -> Dict[str, str]:
+    """Get browser headers for API requests"""
     headers = {
-        "User-Agent": BROWSER_UA,
-        "Accept": "*/*",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-        "X-FE-Version": X_FE_VERSION,
-        "sec-ch-ua": SEC_CH_UA,
-        "sec-ch-ua-mobile": SEC_CH_UA_MOB,
-        "sec-ch-ua-platform": SEC_CH_UA_PLAT,
-        "Origin": ORIGIN_BASE,
-        "Referer": f"{ORIGIN_BASE}/",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": Config.BROWSER_UA,
+        "Accept-Language": "zh-CN",
+        "sec-ch-ua": Config.SEC_CH_UA,
+        "sec-ch-ua-mobile": Config.SEC_CH_UA_MOB,
+        "sec-ch-ua-platform": Config.SEC_CH_UA_PLAT,
+        "X-FE-Version": Config.X_FE_VERSION,
+        "Origin": Config.ORIGIN_BASE,
     }
     
-    response = requests.get(f"{ORIGIN_BASE}/api/v1/auths/", headers=headers, timeout=10.0)
+    if referer_chat_id:
+        headers["Referer"] = f"{Config.ORIGIN_BASE}/c/{referer_chat_id}"
     
-    if response.status_code != 200:
-        raise Exception(f"anon token status={response.status_code}")
-    
-    data = response.json()
-    token = data.get("token")
-    if not token:
-        raise Exception("anon token empty")
-    
-    return token
+    return headers
 
 
-# CORS中间件
-@app.middleware("http")
-async def add_cors_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
+def get_anonymous_token() -> str:
+    """Get anonymous token for authentication"""
+    headers = get_browser_headers()
+    headers.update({
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Referer": f"{Config.ORIGIN_BASE}/",
+    })
+    
+    try:
+        response = requests.get(
+            f"{Config.ORIGIN_BASE}/api/v1/auths/",
+            headers=headers,
+            timeout=10.0
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"anon token status={response.status_code}")
+        
+        data = response.json()
+        token = data.get("token")
+        if not token:
+            raise Exception("anon token empty")
+        
+        return token
+    except Exception as e:
+        debug_log(f"获取匿名token失败: {e}")
+        raise
+
+
+def get_auth_token() -> str:
+    """Get authentication token (anonymous or fixed)"""
+    if Config.ANON_TOKEN_ENABLED:
+        try:
+            token = get_anonymous_token()
+            debug_log(f"匿名token获取成功: {token[:10]}...")
+            return token
+        except Exception as e:
+            debug_log(f"匿名token获取失败，回退固定token: {e}")
+    
+    return Config.UPSTREAM_TOKEN
+
+
+def transform_thinking_content(content: str) -> str:
+    """Transform thinking content according to configuration"""
+    # Remove summary tags
+    content = re.sub(r'(?s)<summary>.*?</summary>', '', content)
+    # Clean up remaining tags
+    content = content.replace("</thinking>", "").replace("<Full>", "").replace("</Full>", "")
+    content = content.strip()
+    
+    if Config.THINK_TAGS_MODE == "think":
+        content = re.sub(r'<details[^>]*>', '<think>', content)
+        content = content.replace("</details>", "</think>")
+    elif Config.THINK_TAGS_MODE == "strip":
+        content = re.sub(r'<details[^>]*>', '', content)
+        content = content.replace("</details>", "")
+    
+    # Remove line prefixes
+    content = content.lstrip("> ")
+    content = content.replace("\n> ", "\n")
+    
+    return content.strip()
+
+
+def create_openai_response_chunk(
+    model: str,
+    delta: Optional[Delta] = None,
+    finish_reason: Optional[str] = None
+) -> OpenAIResponse:
+    """Create OpenAI response chunk for streaming"""
+    return OpenAIResponse(
+        id=f"chatcmpl-{int(time.time())}",
+        object="chat.completion.chunk",
+        created=int(time.time()),
+        model=model,
+        choices=[Choice(
+            index=0,
+            delta=delta or Delta(),
+            finish_reason=finish_reason
+        )]
+    )
+
+
+def handle_upstream_error(error: UpstreamError) -> Generator[str, None, None]:
+    """Handle upstream error response"""
+    debug_log(f"上游错误: code={error.code}, detail={error.detail}")
+    
+    # Send end chunk
+    end_chunk = create_openai_response_chunk(
+        model=Config.DEFAULT_MODEL_NAME,
+        finish_reason="stop"
+    )
+    yield f"data: {end_chunk.model_dump_json()}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+def call_upstream_api(
+    upstream_req: UpstreamRequest,
+    chat_id: str,
+    auth_token: str
+) -> requests.Response:
+    """Call upstream API with proper headers"""
+    headers = get_browser_headers(chat_id)
+    headers["Authorization"] = f"Bearer {auth_token}"
+    
+    debug_log(f"调用上游API: {Config.UPSTREAM_URL}")
+    debug_log(f"上游请求体: {upstream_req.model_dump_json()}")
+    
+    response = requests.post(
+        Config.UPSTREAM_URL,
+        json=upstream_req.model_dump(exclude_none=True),
+        headers=headers,
+        timeout=60.0,
+        stream=True
+    )
+    
+    debug_log(f"上游响应状态: {response.status_code}")
     return response
 
 
-# OPTIONS处理器
+# =============================================================================
+# Response Handlers
+# =============================================================================
+
+class ResponseHandler:
+    """Base class for response handling"""
+    
+    def __init__(self, upstream_req: UpstreamRequest, chat_id: str, auth_token: str):
+        self.upstream_req = upstream_req
+        self.chat_id = chat_id
+        self.auth_token = auth_token
+    
+    def _call_upstream(self) -> requests.Response:
+        """Call upstream API with error handling"""
+        try:
+            return call_upstream_api(self.upstream_req, self.chat_id, self.auth_token)
+        except Exception as e:
+            debug_log(f"调用上游失败: {e}")
+            raise
+    
+    def _handle_upstream_error(self, response: requests.Response) -> None:
+        """Handle upstream error response"""
+        debug_log(f"上游返回错误状态: {response.status_code}")
+        if Config.DEBUG_MODE:
+            debug_log(f"上游错误响应: {response.text}")
+
+
+class StreamResponseHandler(ResponseHandler):
+    """Handler for streaming responses"""
+    
+    def handle(self) -> Generator[str, None, None]:
+        """Handle streaming response"""
+        debug_log(f"开始处理流式响应 (chat_id={self.chat_id})")
+        
+        try:
+            response = self._call_upstream()
+        except Exception:
+            yield "data: {\"error\": \"Failed to call upstream\"}\n\n"
+            return
+        
+        if response.status_code != 200:
+            self._handle_upstream_error(response)
+            yield "data: {\"error\": \"Upstream error\"}\n\n"
+            return
+        
+        # Send initial role chunk
+        first_chunk = create_openai_response_chunk(
+            model=Config.DEFAULT_MODEL_NAME,
+            delta=Delta(role="assistant")
+        )
+        yield f"data: {first_chunk.model_dump_json()}\n\n"
+        
+        # Process stream
+        debug_log("开始读取上游SSE流")
+        sent_initial_answer = False
+        
+        with SSEParser(response, debug_mode=Config.DEBUG_MODE) as parser:
+            for event in parser.iter_json_data(UpstreamData):
+                upstream_data = event['data']
+                
+                # Check for errors
+                if self._has_error(upstream_data):
+                    error = self._get_error(upstream_data)
+                    yield from handle_upstream_error(error)
+                    break
+                
+                debug_log(f"解析成功 - 类型: {upstream_data.type}, 阶段: {upstream_data.data.phase}, "
+                         f"内容长度: {len(upstream_data.data.delta_content)}, 完成: {upstream_data.data.done}")
+                
+                # Process content
+                yield from self._process_content(upstream_data, sent_initial_answer)
+                
+                # Check if done
+                if upstream_data.data.done or upstream_data.data.phase == "done":
+                    debug_log("检测到流结束信号")
+                    yield from self._send_end_chunk()
+                    break
+    
+    def _has_error(self, upstream_data: UpstreamData) -> bool:
+        """Check if upstream data contains error"""
+        return bool(
+            upstream_data.error or 
+            upstream_data.data.error or 
+            (upstream_data.data.inner and upstream_data.data.inner.error)
+        )
+    
+    def _get_error(self, upstream_data: UpstreamData) -> UpstreamError:
+        """Get error from upstream data"""
+        return (
+            upstream_data.error or 
+            upstream_data.data.error or 
+            (upstream_data.data.inner.error if upstream_data.data.inner else None)
+        )
+    
+    def _process_content(
+        self, 
+        upstream_data: UpstreamData, 
+        sent_initial_answer: bool
+    ) -> Generator[str, None, None]:
+        """Process content from upstream data"""
+        # Handle initial answer content
+        if (not sent_initial_answer and 
+            upstream_data.data.edit_content and 
+            upstream_data.data.phase == "answer"):
+            
+            content = self._extract_edit_content(upstream_data.data.edit_content)
+            if content:
+                debug_log(f"发送普通内容: {content}")
+                chunk = create_openai_response_chunk(
+                    model=Config.DEFAULT_MODEL_NAME,
+                    delta=Delta(content=content)
+                )
+                yield f"data: {chunk.model_dump_json()}\n\n"
+                sent_initial_answer = True
+        
+        # Handle delta content
+        if upstream_data.data.delta_content:
+            content = upstream_data.data.delta_content
+            
+            if upstream_data.data.phase == "thinking":
+                content = transform_thinking_content(content)
+                if content:
+                    debug_log(f"发送思考内容: {content}")
+                    chunk = create_openai_response_chunk(
+                        model=Config.DEFAULT_MODEL_NAME,
+                        delta=Delta(reasoning_content=content)
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+            else:
+                if content:
+                    debug_log(f"发送普通内容: {content}")
+                    chunk = create_openai_response_chunk(
+                        model=Config.DEFAULT_MODEL_NAME,
+                        delta=Delta(content=content)
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+    
+    def _extract_edit_content(self, edit_content: str) -> str:
+        """Extract content from edit_content field"""
+        parts = edit_content.split("</details>")
+        return parts[1] if len(parts) > 1 else ""
+    
+    def _send_end_chunk(self) -> Generator[str, None, None]:
+        """Send end chunk and DONE signal"""
+        end_chunk = create_openai_response_chunk(
+            model=Config.DEFAULT_MODEL_NAME,
+            finish_reason="stop"
+        )
+        yield f"data: {end_chunk.model_dump_json()}\n\n"
+        yield "data: [DONE]\n\n"
+        debug_log("流式响应完成")
+
+
+class NonStreamResponseHandler(ResponseHandler):
+    """Handler for non-streaming responses"""
+    
+    def handle(self) -> JSONResponse:
+        """Handle non-streaming response"""
+        debug_log(f"开始处理非流式响应 (chat_id={self.chat_id})")
+        
+        try:
+            response = self._call_upstream()
+        except Exception as e:
+            debug_log(f"调用上游失败: {e}")
+            raise HTTPException(status_code=502, detail="Failed to call upstream")
+        
+        if response.status_code != 200:
+            self._handle_upstream_error(response)
+            raise HTTPException(status_code=502, detail="Upstream error")
+        
+        # Collect full response
+        full_content = []
+        debug_log("开始收集完整响应内容")
+        
+        with SSEParser(response, debug_mode=Config.DEBUG_MODE) as parser:
+            for event in parser.iter_json_data(UpstreamData):
+                upstream_data = event['data']
+                
+                if upstream_data.data.delta_content:
+                    content = upstream_data.data.delta_content
+                    
+                    if upstream_data.data.phase == "thinking":
+                        content = transform_thinking_content(content)
+                    
+                    if content:
+                        full_content.append(content)
+                
+                if upstream_data.data.done or upstream_data.data.phase == "done":
+                    debug_log("检测到完成信号，停止收集")
+                    break
+        
+        final_content = "".join(full_content)
+        debug_log(f"内容收集完成，最终长度: {len(final_content)}")
+        
+        # Build response
+        response_data = OpenAIResponse(
+            id=f"chatcmpl-{int(time.time())}",
+            object="chat.completion",
+            created=int(time.time()),
+            model=Config.DEFAULT_MODEL_NAME,
+            choices=[Choice(
+                index=0,
+                message=Message(
+                    role="assistant",
+                    content=final_content
+                ),
+                finish_reason="stop"
+            )],
+            usage=Usage()
+        )
+        
+        debug_log("非流式响应发送完成")
+        return JSONResponse(content=response_data.model_dump(exclude_none=True))
+
+
+# =============================================================================
+# FastAPI Application
+# =============================================================================
+
+app = FastAPI(
+    title="OpenAI Compatible API Server",
+    description="An OpenAI-compatible API server for Z.AI chat service",
+    version="1.0.0"
+)
+
+
+# CORS middleware
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    """Add CORS headers to responses"""
+    response = await call_next(request)
+    response.headers.update({
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Allow-Credentials": "true"
+    })
+    return response
+
+
+# =============================================================================
+# API Endpoints
+# =============================================================================
+
 @app.options("/")
 async def handle_options():
+    """Handle OPTIONS requests"""
     return Response(status_code=200)
 
 
-# 模型列表接口
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {"message": "OpenAI Compatible API Server"}
+
+
 @app.get("/v1/models")
-async def handle_models():
+async def list_models():
+    """List available models"""
+    current_time = int(time.time())
     response = ModelsResponse(
         data=[
             Model(
-                id=DEFAULT_MODEL_NAME,
-                created=int(time.time()),
+                id=Config.DEFAULT_MODEL_NAME,
+                created=current_time,
                 owned_by="z.ai"
             ),
             Model(
-                id=THINKING_MODEL_NAME,
-                created=int(time.time()),
+                id=Config.THINKING_MODEL_NAME,
+                created=current_time,
                 owned_by="z.ai"
             ),
             Model(
-                id=SEARCH_MODEL_NAME,
-                created=int(time.time()),
+                id=Config.SEARCH_MODEL_NAME,
+                created=current_time,
                 owned_by="z.ai"
             ),
         ]
@@ -370,42 +748,41 @@ async def handle_models():
     return response
 
 
-# 聊天完成接口
 @app.post("/v1/chat/completions")
-async def handle_chat_completions(
+async def chat_completions(
     request: OpenAIRequest,
     authorization: str = Header(...)
 ):
+    """Handle chat completion requests"""
     debug_log("收到chat completions请求")
     
-    # 验证API Key
+    # Validate API key
     if not authorization.startswith("Bearer "):
         debug_log("缺少或无效的Authorization头")
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     
-    api_key = authorization[7:]  # 去掉"Bearer "
-    if api_key != DEFAULT_KEY:
+    api_key = authorization[7:]
+    if api_key != Config.DEFAULT_KEY:
         debug_log(f"无效的API key: {api_key}")
         raise HTTPException(status_code=401, detail="Invalid API key")
     
     debug_log("API key验证通过")
     debug_log(f"请求解析成功 - 模型: {request.model}, 流式: {request.stream}, 消息数: {len(request.messages)}")
     
-    # 生成会话相关ID
-    chat_id = f"{int(time.time() * 1000)}-{int(time.time())}"
-    msg_id = str(int(time.time() * 1000000))
+    # Generate IDs
+    chat_id, msg_id = generate_request_ids()
     
-    # 确定模型特性
-    is_thinking = request.model == THINKING_MODEL_NAME
-    is_search = request.model == SEARCH_MODEL_NAME
+    # Determine model features
+    is_thinking = request.model == Config.THINKING_MODEL_NAME
+    is_search = request.model == Config.SEARCH_MODEL_NAME
     search_mcp = "deep-web-search" if is_search else ""
     
-    # 构造上游请求
+    # Build upstream request
     upstream_req = UpstreamRequest(
-        stream=True,  # 总是使用流式从上游获取
+        stream=True,  # Always use streaming from upstream
         chat_id=chat_id,
         id=msg_id,
-        model="0727-360B-API",  # 上游实际模型ID
+        model="0727-360B-API",  # Actual upstream model ID
         messages=request.messages,
         params={},
         features={
@@ -431,20 +808,14 @@ async def handle_chat_completions(
         }
     )
     
-    # 选择本次对话使用的token
-    auth_token = UPSTREAM_TOKEN
-    if ANON_TOKEN_ENABLED:
-        try:
-            token = get_anonymous_token()
-            auth_token = token
-            debug_log(f"匿名token获取成功: {token[:10]}...")
-        except Exception as e:
-            debug_log(f"匿名token获取失败，回退固定token: {e}")
+    # Get authentication token
+    auth_token = get_auth_token()
     
-    # 调用上游API
+    # Handle response based on stream flag
     if request.stream:
+        handler = StreamResponseHandler(upstream_req, chat_id, auth_token)
         return StreamingResponse(
-            handle_stream_response(upstream_req, chat_id, auth_token),
+            handler.handle(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -452,280 +823,14 @@ async def handle_chat_completions(
             }
         )
     else:
-        return handle_non_stream_response(upstream_req, chat_id, auth_token)
+        handler = NonStreamResponseHandler(upstream_req, chat_id, auth_token)
+        return handler.handle()
 
 
-def call_upstream_with_headers(upstream_req: UpstreamRequest, referer_chat_id: str, auth_token: str) -> requests.Response:
-    """调用上游API"""
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-        "User-Agent": BROWSER_UA,
-        "Authorization": f"Bearer {auth_token}",
-        "Accept-Language": "zh-CN",
-        "sec-ch-ua": SEC_CH_UA,
-        "sec-ch-ua-mobile": SEC_CH_UA_MOB,
-        "sec-ch-ua-platform": SEC_CH_UA_PLAT,
-        "X-FE-Version": X_FE_VERSION,
-        "Origin": ORIGIN_BASE,
-        "Referer": f"{ORIGIN_BASE}/c/{referer_chat_id}",
-    }
-    
-    debug_log(f"调用上游API: {UPSTREAM_URL}")
-    debug_log(f"上游请求体: {upstream_req.model_dump_json()}")
-    
-    response = requests.post(
-        UPSTREAM_URL,
-        json=upstream_req.model_dump(exclude_none=True),
-        headers=headers,
-        timeout=60.0,
-        stream=True
-    )
-    
-    debug_log(f"上游响应状态: {response.status_code}")
-    return response
-
-
-def transform_thinking(s: str) -> str:
-    """转换思考内容"""
-    # 去 <summary>…</summary>
-    s = re.sub(r'(?s)<summary>.*?</summary>', '', s)
-    # 清理残留自定义标签
-    s = s.replace("</thinking>", "").replace("<Full>", "").replace("</Full>", "")
-    s = s.strip()
-    
-    if THINK_TAGS_MODE == "think":
-        s = re.sub(r'<details[^>]*>', '<think>', s)
-        s = s.replace("</details>", "</think>")
-    elif THINK_TAGS_MODE == "strip":
-        s = re.sub(r'<details[^>]*>', '', s)
-        s = s.replace("</details>", "")
-    
-    # 处理每行前缀 "> "
-    s = s.lstrip("> ")
-    s = s.replace("\n> ", "\n")
-    return s.strip()
-
-
-def handle_stream_response(upstream_req: UpstreamRequest, chat_id: str, auth_token: str):
-    """处理流式响应"""
-    debug_log(f"开始处理流式响应 (chat_id={chat_id})")
-    
-    try:
-        response = call_upstream_with_headers(upstream_req, chat_id, auth_token)
-    except Exception as e:
-        debug_log(f"调用上游失败: {e}")
-        yield "data: {\"error\": \"Failed to call upstream\"}\n\n"
-        return
-    
-    if response.status_code != 200:
-        debug_log(f"上游返回错误状态: {response.status_code}")
-        if DEBUG_MODE:
-            debug_log(f"上游错误响应: {response.text}")
-        yield "data: {\"error\": \"Upstream error\"}\n\n"
-        return
-    
-    # 发送第一个chunk（role）
-    first_chunk = OpenAIResponse(
-        id=f"chatcmpl-{int(time.time())}",
-        object="chat.completion.chunk",
-        created=int(time.time()),
-        model=DEFAULT_MODEL_NAME,
-        choices=[Choice(
-            index=0,
-            delta=Delta(role="assistant")
-        )]
-    )
-    yield f"data: {first_chunk.model_dump_json()}\n\n"
-    
-    # 使用 SSE 解析器处理流
-    debug_log("开始读取上游SSE流")
-    sent_initial_answer = False
-    
-    with SSEParser(response, debug_mode=DEBUG_MODE) as parser:
-        for event in parser.iter_json_data(UpstreamData):
-            upstream_data = event['data']
-            
-            # 错误检测
-            if (upstream_data.error or 
-                upstream_data.data.error or 
-                (upstream_data.data.inner and upstream_data.data.inner.error)):
-                
-                err_obj = upstream_data.error or upstream_data.data.error
-                if not err_obj and upstream_data.data.inner:
-                    err_obj = upstream_data.data.inner.error
-                
-                debug_log(f"上游错误: code={err_obj.code}, detail={err_obj.detail}")
-                
-                # 结束下游流
-                end_chunk = OpenAIResponse(
-                    id=f"chatcmpl-{int(time.time())}",
-                    object="chat.completion.chunk",
-                    created=int(time.time()),
-                    model=DEFAULT_MODEL_NAME,
-                    choices=[Choice(
-                        index=0,
-                        delta=Delta(),
-                        finish_reason="stop"
-                    )]
-                )
-                yield f"data: {end_chunk.model_dump_json()}\n\n"
-                yield "data: [DONE]\n\n"
-                break
-            
-            debug_log(f"解析成功 - 类型: {upstream_data.type}, 阶段: {upstream_data.data.phase}, "
-                     f"内容长度: {len(upstream_data.data.delta_content)}, 完成: {upstream_data.data.done}")
-            
-            # 处理EditContent在最初的answer信息（只发送一次）
-            if (not sent_initial_answer and 
-                upstream_data.data.edit_content and 
-                upstream_data.data.phase == "answer"):
-                
-                out = upstream_data.data.edit_content
-                if out:
-                    parts = out.split("</details>")
-                    if len(parts) > 1:
-                        content = parts[1]
-                        if content:
-                            debug_log(f"发送普通内容: {content}")
-                            chunk = OpenAIResponse(
-                                id=f"chatcmpl-{int(time.time())}",
-                                object="chat.completion.chunk",
-                                created=int(time.time()),
-                                model=DEFAULT_MODEL_NAME,
-                                choices=[Choice(
-                                    index=0,
-                                    delta=Delta(content=content)
-                                )]
-                            )
-                            yield f"data: {chunk.model_dump_json()}\n\n"
-                            sent_initial_answer = True
-            
-            # 处理DeltaContent
-            if upstream_data.data.delta_content:
-                out = upstream_data.data.delta_content
-                
-                if upstream_data.data.phase == "thinking":
-                    out = transform_thinking(out)
-                    # 思考内容使用 reasoning_content 字段
-                    if out:
-                        debug_log(f"发送思考内容: {out}")
-                        chunk = OpenAIResponse(
-                            id=f"chatcmpl-{int(time.time())}",
-                            object="chat.completion.chunk",
-                            created=int(time.time()),
-                            model=DEFAULT_MODEL_NAME,
-                            choices=[Choice(
-                                index=0,
-                                delta=Delta(reasoning_content=out)
-                            )]
-                        )
-                        yield f"data: {chunk.model_dump_json()}\n\n"
-                else:
-                    # 普通内容使用 content 字段
-                    if out:
-                        debug_log(f"发送普通内容: {out}")
-                        chunk = OpenAIResponse(
-                            id=f"chatcmpl-{int(time.time())}",
-                            object="chat.completion.chunk",
-                            created=int(time.time()),
-                            model=DEFAULT_MODEL_NAME,
-                            choices=[Choice(
-                                index=0,
-                                delta=Delta(content=out)
-                            )]
-                        )
-                        yield f"data: {chunk.model_dump_json()}\n\n"
-            
-            # 检查是否结束
-            if upstream_data.data.done or upstream_data.data.phase == "done":
-                debug_log("检测到流结束信号")
-                
-                # 发送结束chunk
-                end_chunk = OpenAIResponse(
-                    id=f"chatcmpl-{int(time.time())}",
-                    object="chat.completion.chunk",
-                    created=int(time.time()),
-                    model=DEFAULT_MODEL_NAME,
-                    choices=[Choice(
-                        index=0,
-                        delta=Delta(),
-                        finish_reason="stop"
-                    )]
-                )
-                yield f"data: {end_chunk.model_dump_json()}\n\n"
-                yield "data: [DONE]\n\n"
-                debug_log(f"流式响应完成")
-                break
-
-
-def handle_non_stream_response(upstream_req: UpstreamRequest, chat_id: str, auth_token: str) -> JSONResponse:
-    """处理非流式响应"""
-    debug_log(f"开始处理非流式响应 (chat_id={chat_id})")
-    
-    try:
-        response = call_upstream_with_headers(upstream_req, chat_id, auth_token)
-    except Exception as e:
-        debug_log(f"调用上游失败: {e}")
-        raise HTTPException(status_code=502, detail="Failed to call upstream")
-    
-    if response.status_code != 200:
-        debug_log(f"上游返回错误状态: {response.status_code}")
-        if DEBUG_MODE:
-            debug_log(f"上游错误响应: {response.text}")
-        raise HTTPException(status_code=502, detail="Upstream error")
-    
-    # 收集完整响应
-    full_content = []
-    debug_log("开始收集完整响应内容")
-    
-    with SSEParser(response, debug_mode=DEBUG_MODE) as parser:
-        for event in parser.iter_json_data(UpstreamData):
-            upstream_data = event['data']
-            
-            if upstream_data.data.delta_content:
-                out = upstream_data.data.delta_content
-                
-                if upstream_data.data.phase == "thinking":
-                    out = transform_thinking(out)
-                
-                if out:
-                    full_content.append(out)
-            
-            if upstream_data.data.done or upstream_data.data.phase == "done":
-                debug_log("检测到完成信号，停止收集")
-                break
-    
-    final_content = "".join(full_content)
-    debug_log(f"内容收集完成，最终长度: {len(final_content)}")
-    
-    # 构造完整响应
-    response_data = OpenAIResponse(
-        id=f"chatcmpl-{int(time.time())}",
-        object="chat.completion",
-        created=int(time.time()),
-        model=DEFAULT_MODEL_NAME,
-        choices=[Choice(
-            index=0,
-            message=Message(
-                role="assistant",
-                content=final_content
-            ),
-            finish_reason="stop"
-        )],
-        usage=Usage()
-    )
-    
-    debug_log("非流式响应发送完成")
-    return JSONResponse(content=response_data.model_dump(exclude_none=True))
-
-
-# 根路径处理器
-@app.get("/")
-async def root():
-    return {"message": "OpenAI Compatible API Server"}
-
+# =============================================================================
+# Main Entry Point
+# =============================================================================
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run("main:app", host="0.0.0.0", port=Config.PORT, reload=True)
