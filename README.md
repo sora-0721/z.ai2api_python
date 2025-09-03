@@ -94,6 +94,37 @@
 
    注意：请将 `api_key` 替换为您在 `main.py` 中配置的 `DEFAULT_KEY` 值。
 
+### 使用 Docker Compose
+
+1. 启动服务：
+   ```bash
+   # 在 deploy 目录下运行
+   cd deploy
+   docker-compose up -d
+   ```
+
+![744X487/QQ20250903-145750.png](https://tc.z.wiki/autoupload/f/KTO6-pUlsq3zQ-YJ9ppdgtiO_OyvX7mIgxFBfDMDErs/20250903/DkjD/744X487/QQ20250903-145750.png)
+
+2. 停止服务：
+   ```bash
+   docker-compose down
+   ```
+
+3. 查看日志：
+   ```bash
+   docker-compose logs -f
+   ```
+
+4. 重新构建并启动：
+   ```bash
+   docker-compose up -d --build
+   ```
+
+注意：如需修改配置参数（如 API 密钥、端口等），请直接编辑 `main.py` 文件中的 `Config` 类。
+
+![1830X875/微信图片_20250903145327_21624_1.png](https://tc-new.z.wiki/autoupload/f/KTO6-pUlsq3zQ-YJ9ppdgtiO_OyvX7mIgxFBfDMDErs/20250903/AF2F/1830X875/%E5%BE%AE%E4%BF%A1%E5%9B%BE%E7%89%87_20250903145327_21624_1.png)
+
+
 ## 配置选项
 
 | 配置项 | 描述 | 默认值 |
