@@ -5,7 +5,7 @@ import requests
 
 # API 配置
 API_BASE = "http://localhost:8080"
-API_KEY = "sk-tbkFoKzk9a531YyUNNF5"
+API_KEY = "sk-your-api-key"
 
 def test_weather_query():
     """测试天气查询"""

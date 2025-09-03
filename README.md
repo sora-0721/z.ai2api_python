@@ -52,7 +52,7 @@
 
 2. 配置服务（可选）：
    编辑 `main.py` 中的 `ServerConfig` 类以调整服务行为：
-   - `AUTH_TOKEN`: 客户端 API 密钥
+   - `AUTH_TOKEN`: 客户端 API Key 密钥
    - `API_ENDPOINT`: Z.ai 上游 API 地址
    - `BACKUP_TOKEN`: 固定认证 token（匿名模式失败时使用）
    - `LISTEN_PORT`: 服务监听端口
@@ -75,7 +75,7 @@
    # 初始化客户端
    client = openai.OpenAI(
        base_url="http://localhost:8080/v1",
-       api_key="sk-tbkFoKzk9a531YyUNNF5"  # 使用配置的 AUTH_TOKEN
+       api_key="sk-your-api-key"
    )
 
    # 流式调用示例
@@ -108,7 +108,7 @@ import openai
 # 初始化客户端
 client = openai.OpenAI(
     base_url="http://localhost:8080/v1",
-    api_key="sk-tbkFoKzk9a531YyUNNF5"
+    api_key="sk-your-api-key"
 )
 
 # 定义天气查询工具
@@ -345,7 +345,7 @@ python function_call_demo.py
 | 配置项 | 描述 | 默认值 |
 |--------|------|--------|
 | `API_ENDPOINT` | Z.ai 的上游 API 地址 | `https://chat.z.ai/api/chat/completions` |
-| `AUTH_TOKEN` | 下游客户端鉴权 key | `sk-tbkFoKzk9a531YyUNNF5` |
+| `AUTH_TOKEN` | 下游客户端鉴权 key | `sk-your-api-key` |
 | `BACKUP_TOKEN` | 上游 API 的 token (匿名模式失败时使用) | JWT token |
 | `PRIMARY_MODEL` | 默认模型名称 | `GLM-4.5` |
 | `THINKING_MODEL` | 思考模型名称 | `GLM-4.5-Thinking` |
