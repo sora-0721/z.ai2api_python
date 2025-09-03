@@ -24,34 +24,41 @@ from pydantic import BaseModel, Field
 # Configuration Constants
 # =============================================================================
 
-class Config:
-    """Centralized configuration constants"""
+class ServerConfig:
+    """Centralized server configuration"""
     
     # API Configuration
-    UPSTREAM_URL: str = "https://chat.z.ai/api/chat/completions"
-    DEFAULT_KEY: str = "sk-tbkFoKzk9a531YyUNNF5"
-    UPSTREAM_TOKEN: str = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjMxNmJjYjQ4LWZmMmYtNGExNS04NTNkLWYyYTI5YjY3ZmYwZiIsImVtYWlsIjoiR3Vlc3QtMTc1NTg0ODU4ODc4OEBndWVzdC5jb20ifQ.PktllDySS3trlyuFpTeIZf-7hl8Qu1qYF3BxjgIul0BrNux2nX9hVzIjthLXKMWAf9V0qM8Vm_iyDqkjPGsaiQ"
+    API_ENDPOINT: str = "https://chat.z.ai/api/chat/completions"
+    AUTH_TOKEN: str = "sk-tbkFoKzk9a531YyUNNF5"
+    BACKUP_TOKEN: str = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjMxNmJjYjQ4LWZmMmYtNGExNS04NTNkLWYyYTI5YjY3ZmYwZiIsImVtYWlsIjoiR3Vlc3QtMTc1NTg0ODU4ODc4OEBndWVzdC5jb20ifQ.PktllDySS3trlyuFpTeIZf-7hl8Qu1qYF3BxjgIul0BrNux2nX9hVzIjthLXKMWAf9V0qM8Vm_iyDqkjPGsaiQ"
     
     # Model Configuration
-    DEFAULT_MODEL_NAME: str = "GLM-4.5"
-    THINKING_MODEL_NAME: str = "GLM-4.5-Thinking"
-    SEARCH_MODEL_NAME: str = "GLM-4.5-Search"
+    PRIMARY_MODEL: str = "GLM-4.5"
+    THINKING_MODEL: str = "GLM-4.5-Thinking"
+    SEARCH_MODEL: str = "GLM-4.5-Search"
     
     # Server Configuration
-    PORT: int = 8080
-    DEBUG_MODE: bool = True
+    LISTEN_PORT: int = 8080
+    DEBUG_LOGGING: bool = True
     
     # Feature Configuration
-    THINK_TAGS_MODE: str = "think"  # strip: 去除<details>标签；think: 转为<think>标签；raw: 保留原样
-    ANON_TOKEN_ENABLED: bool = True
+    THINKING_PROCESSING: str = "think"  # strip: 去除<details>标签；think: 转为</think>标签；raw: 保留原样
+    ANONYMOUS_MODE: bool = True
+    TOOL_SUPPORT: bool = True
+    SCAN_LIMIT: int = 200000
     
     # Browser Headers
-    X_FE_VERSION: str = "prod-fe-1.0.70"
-    BROWSER_UA: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0"
-    SEC_CH_UA: str = '"Not;A=Brand";v="99", "Microsoft Edge";v="139", "Chromium";v="139"'
-    SEC_CH_UA_MOB: str = "?0"
-    SEC_CH_UA_PLAT: str = '"Windows"'
-    ORIGIN_BASE: str = "https://chat.z.ai"
+    CLIENT_HEADERS: Dict[str, str] = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0",
+        "Accept-Language": "zh-CN",
+        "sec-ch-ua": '"Not;A=Brand";v="99", "Microsoft Edge";v="139", "Chromium";v="139"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "X-FE-Version": "prod-fe-1.0.70",
+        "Origin": "https://chat.z.ai",
+    }
 
 
 # =============================================================================
@@ -61,8 +68,9 @@ class Config:
 class Message(BaseModel):
     """Chat message model"""
     role: str
-    content: str
+    content: Optional[str] = None
     reasoning_content: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
 
 
 class OpenAIRequest(BaseModel):
@@ -72,6 +80,8 @@ class OpenAIRequest(BaseModel):
     stream: Optional[bool] = False
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Any] = None
 
 
 class ModelItem(BaseModel):
@@ -103,6 +113,7 @@ class Delta(BaseModel):
     role: Optional[str] = None
     content: Optional[str] = None
     reasoning_content: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
 
 
 class Choice(BaseModel):
@@ -195,7 +206,10 @@ class SSEParser:
     def debug_log(self, format_str: str, *args) -> None:
         """Log debug message if debug mode is enabled"""
         if self.debug_mode:
-            print(f"[SSE_PARSER] {format_str % args}")
+            if args:
+                print(f"[SSE_PARSER] {format_str % args}")
+            else:
+                print(f"[SSE_PARSER] {format_str}")
     
     def iter_events(self) -> Generator[Dict[str, Any], None, None]:
         """Iterate over SSE events
@@ -308,13 +322,235 @@ class SSEParser:
 
 
 # =============================================================================
+# Function Call Utilities
+# =============================================================================
+
+def generate_tool_prompt(tools: List[Dict[str, Any]]) -> str:
+    """Generate tool injection prompt with enhanced formatting"""
+    if not tools:
+        return ""
+    
+    tool_definitions = []
+    for tool in tools:
+        if tool.get("type") != "function":
+            continue
+            
+        function_spec = tool.get("function", {}) or {}
+        function_name = function_spec.get("name", "unknown")
+        function_description = function_spec.get("description", "")
+        parameters = function_spec.get("parameters", {}) or {}
+        
+        # Create structured tool definition
+        tool_info = [f"## {function_name}", f"**Purpose**: {function_description}"]
+        
+        # Add parameter details
+        parameter_properties = parameters.get("properties", {}) or {}
+        required_parameters = set(parameters.get("required", []) or [])
+        
+        if parameter_properties:
+            tool_info.append("**Parameters**:")
+            for param_name, param_details in parameter_properties.items():
+                param_type = (param_details or {}).get("type", "any")
+                param_desc = (param_details or {}).get("description", "")
+                requirement_flag = "**Required**" if param_name in required_parameters else "*Optional*"
+                tool_info.append(f"- `{param_name}` ({param_type}) - {requirement_flag}: {param_desc}")
+        
+        tool_definitions.append("\n".join(tool_info))
+    
+    if not tool_definitions:
+        return ""
+    
+    # Build comprehensive tool prompt
+    prompt_template = (
+        "\n\n# AVAILABLE FUNCTIONS\n" +
+        "\n\n---\n".join(tool_definitions) +
+        "\n\n# USAGE INSTRUCTIONS\n"
+        "When you need to execute a function, respond ONLY with a JSON object containing tool_calls:\n"
+        "```json\n"
+        "{\n"
+        '  "tool_calls": [\n'
+        "    {\n"
+        '      "id": "call_" + unique_id,\n'
+        '      "type": "function",\n'
+        '      "function": {\n'
+        '        "name": "function_name",\n'
+        '        "arguments": {\n'
+        '          "param1": "value1"\n'
+        '        }\n'
+        "      }\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "```\n"
+        "Important: No explanatory text before or after the JSON.\n"
+    )
+    
+    return prompt_template
+
+
+def process_messages_with_tools(
+    messages: List[Dict[str, Any]], 
+    tools: Optional[List[Dict[str, Any]]] = None,
+    tool_choice: Optional[Any] = None
+) -> List[Dict[str, Any]]:
+    """Process messages and inject tool prompts"""
+    processed: List[Dict[str, Any]] = []
+    
+    if tools and ServerConfig.TOOL_SUPPORT and (tool_choice != "none"):
+        tools_prompt = generate_tool_prompt(tools)
+        has_system = any(m.get("role") == "system" for m in messages)
+        
+        if has_system:
+            for m in messages:
+                if m.get("role") == "system":
+                    mm = dict(m)
+                    content = mm.get("content", "")
+                    if content is None:
+                        content = ""
+                    mm["content"] = content + tools_prompt
+                    processed.append(mm)
+                else:
+                    processed.append(m)
+        else:
+            processed = [{"role": "system", "content": "你是一个有用的助手。" + tools_prompt}] + messages
+        
+        # Add tool choice hints
+        if tool_choice in ("required", "auto"):
+            if processed and processed[-1].get("role") == "user":
+                last = dict(processed[-1])
+                content = last.get("content", "")
+                if content is None:
+                    content = ""
+                last["content"] = content + "\n\n请根据需要使用提供的工具函数。"
+                processed[-1] = last
+        elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+            fname = (tool_choice.get("function") or {}).get("name")
+            if fname and processed and processed[-1].get("role") == "user":
+                last = dict(processed[-1])
+                content = last.get("content", "")
+                if content is None:
+                    content = ""
+                last["content"] = content + f"\n\n请使用 {fname} 函数来处理这个请求。"
+                processed[-1] = last
+    else:
+        processed = list(messages)
+    
+    # Handle tool/function messages
+    final_msgs: List[Dict[str, Any]] = []
+    for m in processed:
+        role = m.get("role")
+        if role in ("tool", "function"):
+            tool_name = m.get("name", "unknown")
+            tool_content = m.get("content", "")
+            if isinstance(tool_content, dict):
+                tool_content = json.dumps(tool_content, ensure_ascii=False)
+            elif tool_content is None:
+                tool_content = ""
+            
+            # 确保内容不为空且不包含 None
+            content = f"工具 {tool_name} 返回结果:\n```json\n{tool_content}\n```"
+            if not content.strip():
+                content = f"工具 {tool_name} 执行完成"
+                
+            final_msgs.append({
+                "role": "assistant",
+                "content": content,
+            })
+        else:
+            final_msgs.append(m)
+    
+    return final_msgs
+
+
+# Tool Extraction Patterns
+TOOL_CALL_FENCE_PATTERN = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+TOOL_CALL_INLINE_PATTERN = re.compile(r"(\{[^{}]{0,10000}\"tool_calls\".*?\})", re.DOTALL)
+FUNCTION_CALL_PATTERN = re.compile(r"调用函数\s*[：:]\s*([\w\-\.]+)\s*(?:参数|arguments)[：:]\s*(\{.*?\})", re.DOTALL)
+
+
+def extract_tool_invocations(text: str) -> Optional[List[Dict[str, Any]]]:
+    """Extract tool invocations from response text"""
+    if not text:
+        return None
+    
+    # Limit scan size for performance
+    scannable_text = text[:ServerConfig.SCAN_LIMIT]
+    
+    # Attempt 1: Extract from JSON code blocks
+    json_blocks = TOOL_CALL_FENCE_PATTERN.findall(scannable_text)
+    for json_block in json_blocks:
+        try:
+            parsed_data = json.loads(json_block)
+            tool_calls = parsed_data.get("tool_calls")
+            if tool_calls and isinstance(tool_calls, list):
+                return tool_calls
+        except (json.JSONDecodeError, AttributeError):
+            continue
+    
+    # Attempt 2: Extract inline JSON objects
+    inline_match = TOOL_CALL_INLINE_PATTERN.search(scannable_text)
+    if inline_match:
+        try:
+            inline_json = inline_match.group(1)
+            parsed_data = json.loads(inline_json)
+            tool_calls = parsed_data.get("tool_calls")
+            if tool_calls and isinstance(tool_calls, list):
+                return tool_calls
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    
+    # Attempt 3: Parse natural language function calls
+    natural_lang_match = FUNCTION_CALL_PATTERN.search(scannable_text)
+    if natural_lang_match:
+        function_name = natural_lang_match.group(1).strip()
+        arguments_str = natural_lang_match.group(2).strip()
+        try:
+            # Validate JSON format
+            json.loads(arguments_str)
+            return [{
+                "id": f"invoke_{int(time.time() * 1000000)}",
+                "type": "function",
+                "function": {
+                    "name": function_name,
+                    "arguments": arguments_str
+                }
+            }]
+        except json.JSONDecodeError:
+            return None
+    
+    return None
+
+
+def remove_tool_json_content(text: str) -> str:
+    """Remove tool JSON content from response text"""
+    def remove_tool_call_block(match: re.Match) -> str:
+        json_content = match.group(1)
+        try:
+            parsed_data = json.loads(json_content)
+            if "tool_calls" in parsed_data:
+                return ""
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        return match.group(0)
+    
+    # Remove fenced tool JSON blocks
+    cleaned_text = TOOL_CALL_FENCE_PATTERN.sub(remove_tool_call_block, text)
+    # Remove inline tool JSON
+    cleaned_text = TOOL_CALL_INLINE_PATTERN.sub("", cleaned_text)
+    return cleaned_text.strip()
+
+
+# =============================================================================
 # Utility Functions
 # =============================================================================
 
 def debug_log(message: str, *args) -> None:
     """Log debug message if debug mode is enabled"""
-    if Config.DEBUG_MODE:
-        print(f"[DEBUG] {message % args}")
+    if ServerConfig.DEBUG_LOGGING:
+        if args:
+            print(f"[DEBUG] {message % args}")
+        else:
+            print(f"[DEBUG] {message}")
 
 
 def generate_request_ids() -> Tuple[str, str]:
@@ -327,20 +563,10 @@ def generate_request_ids() -> Tuple[str, str]:
 
 def get_browser_headers(referer_chat_id: str = "") -> Dict[str, str]:
     """Get browser headers for API requests"""
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-        "User-Agent": Config.BROWSER_UA,
-        "Accept-Language": "zh-CN",
-        "sec-ch-ua": Config.SEC_CH_UA,
-        "sec-ch-ua-mobile": Config.SEC_CH_UA_MOB,
-        "sec-ch-ua-platform": Config.SEC_CH_UA_PLAT,
-        "X-FE-Version": Config.X_FE_VERSION,
-        "Origin": Config.ORIGIN_BASE,
-    }
+    headers = ServerConfig.CLIENT_HEADERS.copy()
     
     if referer_chat_id:
-        headers["Referer"] = f"{Config.ORIGIN_BASE}/c/{referer_chat_id}"
+        headers["Referer"] = f"{ServerConfig.CLIENT_HEADERS['Origin']}/c/{referer_chat_id}"
     
     return headers
 
@@ -351,12 +577,12 @@ def get_anonymous_token() -> str:
     headers.update({
         "Accept": "*/*",
         "Accept-Language": "zh-CN,zh;q=0.9",
-        "Referer": f"{Config.ORIGIN_BASE}/",
+        "Referer": f"{ServerConfig.CLIENT_HEADERS['Origin']}/",
     })
     
     try:
         response = requests.get(
-            f"{Config.ORIGIN_BASE}/api/v1/auths/",
+            f"{ServerConfig.CLIENT_HEADERS['Origin']}/api/v1/auths/",
             headers=headers,
             timeout=10.0
         )
@@ -377,7 +603,7 @@ def get_anonymous_token() -> str:
 
 def get_auth_token() -> str:
     """Get authentication token (anonymous or fixed)"""
-    if Config.ANON_TOKEN_ENABLED:
+    if ServerConfig.ANONYMOUS_MODE:
         try:
             token = get_anonymous_token()
             debug_log(f"匿名token获取成功: {token[:10]}...")
@@ -385,7 +611,7 @@ def get_auth_token() -> str:
         except Exception as e:
             debug_log(f"匿名token获取失败，回退固定token: {e}")
     
-    return Config.UPSTREAM_TOKEN
+    return ServerConfig.BACKUP_TOKEN
 
 
 def transform_thinking_content(content: str) -> str:
@@ -396,10 +622,10 @@ def transform_thinking_content(content: str) -> str:
     content = content.replace("</thinking>", "").replace("<Full>", "").replace("</Full>", "")
     content = content.strip()
     
-    if Config.THINK_TAGS_MODE == "think":
+    if ServerConfig.THINKING_PROCESSING == "think":
         content = re.sub(r'<details[^>]*>', '<think>', content)
         content = content.replace("</details>", "</think>")
-    elif Config.THINK_TAGS_MODE == "strip":
+    elif ServerConfig.THINKING_PROCESSING == "strip":
         content = re.sub(r'<details[^>]*>', '', content)
         content = content.replace("</details>", "")
     
@@ -435,7 +661,7 @@ def handle_upstream_error(error: UpstreamError) -> Generator[str, None, None]:
     
     # Send end chunk
     end_chunk = create_openai_response_chunk(
-        model=Config.DEFAULT_MODEL_NAME,
+        model=ServerConfig.PRIMARY_MODEL,
         finish_reason="stop"
     )
     yield f"data: {end_chunk.model_dump_json()}\n\n"
@@ -451,11 +677,11 @@ def call_upstream_api(
     headers = get_browser_headers(chat_id)
     headers["Authorization"] = f"Bearer {auth_token}"
     
-    debug_log(f"调用上游API: {Config.UPSTREAM_URL}")
+    debug_log(f"调用上游API: {ServerConfig.API_ENDPOINT}")
     debug_log(f"上游请求体: {upstream_req.model_dump_json()}")
     
     response = requests.post(
-        Config.UPSTREAM_URL,
+        ServerConfig.API_ENDPOINT,
         json=upstream_req.model_dump(exclude_none=True),
         headers=headers,
         timeout=60.0,
@@ -489,12 +715,18 @@ class ResponseHandler:
     def _handle_upstream_error(self, response: requests.Response) -> None:
         """Handle upstream error response"""
         debug_log(f"上游返回错误状态: {response.status_code}")
-        if Config.DEBUG_MODE:
+        if ServerConfig.DEBUG_LOGGING:
             debug_log(f"上游错误响应: {response.text}")
 
 
 class StreamResponseHandler(ResponseHandler):
     """Handler for streaming responses"""
+    
+    def __init__(self, upstream_req: UpstreamRequest, chat_id: str, auth_token: str, has_tools: bool = False):
+        super().__init__(upstream_req, chat_id, auth_token)
+        self.has_tools = has_tools
+        self.buffered_content = ""
+        self.tool_calls = None
     
     def handle(self) -> Generator[str, None, None]:
         """Handle streaming response"""
@@ -513,7 +745,7 @@ class StreamResponseHandler(ResponseHandler):
         
         # Send initial role chunk
         first_chunk = create_openai_response_chunk(
-            model=Config.DEFAULT_MODEL_NAME,
+            model=ServerConfig.PRIMARY_MODEL,
             delta=Delta(role="assistant")
         )
         yield f"data: {first_chunk.model_dump_json()}\n\n"
@@ -522,7 +754,7 @@ class StreamResponseHandler(ResponseHandler):
         debug_log("开始读取上游SSE流")
         sent_initial_answer = False
         
-        with SSEParser(response, debug_mode=Config.DEBUG_MODE) as parser:
+        with SSEParser(response, debug_mode=ServerConfig.DEBUG_LOGGING) as parser:
             for event in parser.iter_json_data(UpstreamData):
                 upstream_data = event['data']
                 
@@ -566,41 +798,49 @@ class StreamResponseHandler(ResponseHandler):
         sent_initial_answer: bool
     ) -> Generator[str, None, None]:
         """Process content from upstream data"""
-        # Handle initial answer content
-        if (not sent_initial_answer and 
-            upstream_data.data.edit_content and 
-            upstream_data.data.phase == "answer"):
-            
-            content = self._extract_edit_content(upstream_data.data.edit_content)
-            if content:
-                debug_log(f"发送普通内容: {content}")
-                chunk = create_openai_response_chunk(
-                    model=Config.DEFAULT_MODEL_NAME,
-                    delta=Delta(content=content)
-                )
-                yield f"data: {chunk.model_dump_json()}\n\n"
-                sent_initial_answer = True
+        content = upstream_data.data.delta_content or upstream_data.data.edit_content
         
-        # Handle delta content
-        if upstream_data.data.delta_content:
-            content = upstream_data.data.delta_content
-            
-            if upstream_data.data.phase == "thinking":
-                content = transform_thinking_content(content)
-                if content:
-                    debug_log(f"发送思考内容: {content}")
-                    chunk = create_openai_response_chunk(
-                        model=Config.DEFAULT_MODEL_NAME,
-                        delta=Delta(reasoning_content=content)
-                    )
-                    yield f"data: {chunk.model_dump_json()}\n\n"
-            else:
+        if not content:
+            return
+        
+        # Transform thinking content
+        if upstream_data.data.phase == "thinking":
+            content = transform_thinking_content(content)
+        
+        # Buffer content if tools are enabled
+        if self.has_tools:
+            self.buffered_content += content
+        else:
+            # Handle initial answer content
+            if (not sent_initial_answer and 
+                upstream_data.data.edit_content and 
+                upstream_data.data.phase == "answer"):
+                
+                content = self._extract_edit_content(upstream_data.data.edit_content)
                 if content:
                     debug_log(f"发送普通内容: {content}")
                     chunk = create_openai_response_chunk(
-                        model=Config.DEFAULT_MODEL_NAME,
+                        model=ServerConfig.PRIMARY_MODEL,
                         delta=Delta(content=content)
                     )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+                    sent_initial_answer = True
+            
+            # Handle delta content
+            if upstream_data.data.delta_content:
+                if content:
+                    if upstream_data.data.phase == "thinking":
+                        debug_log(f"发送思考内容: {content}")
+                        chunk = create_openai_response_chunk(
+                            model=ServerConfig.PRIMARY_MODEL,
+                            delta=Delta(reasoning_content=content)
+                        )
+                    else:
+                        debug_log(f"发送普通内容: {content}")
+                        chunk = create_openai_response_chunk(
+                            model=ServerConfig.PRIMARY_MODEL,
+                            delta=Delta(content=content)
+                        )
                     yield f"data: {chunk.model_dump_json()}\n\n"
     
     def _extract_edit_content(self, edit_content: str) -> str:
@@ -610,9 +850,44 @@ class StreamResponseHandler(ResponseHandler):
     
     def _send_end_chunk(self) -> Generator[str, None, None]:
         """Send end chunk and DONE signal"""
+        if self.has_tools:
+            # Try to extract tool calls from buffered content
+            self.tool_calls = extract_tool_invocations(self.buffered_content)
+            
+            if self.tool_calls:
+                # Send tool calls
+                tool_calls_list = []
+                for i, tc in enumerate(self.tool_calls):
+                    tool_calls_list.append({
+                        "index": i,
+                        "id": tc.get("id"),
+                        "type": tc.get("type", "function"),
+                        "function": tc.get("function", {}),
+                    })
+                
+                out_chunk = create_openai_response_chunk(
+                    model=ServerConfig.PRIMARY_MODEL,
+                    delta=Delta(tool_calls=tool_calls_list)
+                )
+                yield f"data: {out_chunk.model_dump_json()}\n\n"
+                finish_reason = "tool_calls"
+            else:
+                # Send regular content
+                trimmed_content = remove_tool_json_content(self.buffered_content)
+                if trimmed_content:
+                    content_chunk = create_openai_response_chunk(
+                        model=ServerConfig.PRIMARY_MODEL,
+                        delta=Delta(content=trimmed_content)
+                    )
+                    yield f"data: {content_chunk.model_dump_json()}\n\n"
+                finish_reason = "stop"
+        else:
+            finish_reason = "stop"
+        
+        # Send final chunk
         end_chunk = create_openai_response_chunk(
-            model=Config.DEFAULT_MODEL_NAME,
-            finish_reason="stop"
+            model=ServerConfig.PRIMARY_MODEL,
+            finish_reason=finish_reason
         )
         yield f"data: {end_chunk.model_dump_json()}\n\n"
         yield "data: [DONE]\n\n"
@@ -621,6 +896,10 @@ class StreamResponseHandler(ResponseHandler):
 
 class NonStreamResponseHandler(ResponseHandler):
     """Handler for non-streaming responses"""
+    
+    def __init__(self, upstream_req: UpstreamRequest, chat_id: str, auth_token: str, has_tools: bool = False):
+        super().__init__(upstream_req, chat_id, auth_token)
+        self.has_tools = has_tools
     
     def handle(self) -> JSONResponse:
         """Handle non-streaming response"""
@@ -640,7 +919,7 @@ class NonStreamResponseHandler(ResponseHandler):
         full_content = []
         debug_log("开始收集完整响应内容")
         
-        with SSEParser(response, debug_mode=Config.DEBUG_MODE) as parser:
+        with SSEParser(response, debug_mode=ServerConfig.DEBUG_LOGGING) as parser:
             for event in parser.iter_json_data(UpstreamData):
                 upstream_data = event['data']
                 
@@ -660,19 +939,35 @@ class NonStreamResponseHandler(ResponseHandler):
         final_content = "".join(full_content)
         debug_log(f"内容收集完成，最终长度: {len(final_content)}")
         
+        # Handle tool calls for non-streaming
+        tool_calls = None
+        finish_reason = "stop"
+        message_content = final_content
+        
+        if self.has_tools:
+            tool_calls = extract_tool_invocations(final_content)
+            if tool_calls:
+                # Content must be null when tool_calls are present (OpenAI spec)
+                message_content = None
+                finish_reason = "tool_calls"
+            else:
+                # Remove tool JSON from content
+                message_content = remove_tool_json_content(final_content)
+        
         # Build response
         response_data = OpenAIResponse(
             id=f"chatcmpl-{int(time.time())}",
             object="chat.completion",
             created=int(time.time()),
-            model=Config.DEFAULT_MODEL_NAME,
+            model=ServerConfig.PRIMARY_MODEL,
             choices=[Choice(
                 index=0,
                 message=Message(
                     role="assistant",
-                    content=final_content
+                    content=message_content,
+                    tool_calls=tool_calls
                 ),
-                finish_reason="stop"
+                finish_reason=finish_reason
             )],
             usage=Usage()
         )
@@ -729,17 +1024,17 @@ async def list_models():
     response = ModelsResponse(
         data=[
             Model(
-                id=Config.DEFAULT_MODEL_NAME,
+                id=ServerConfig.PRIMARY_MODEL,
                 created=current_time,
                 owned_by="z.ai"
             ),
             Model(
-                id=Config.THINKING_MODEL_NAME,
+                id=ServerConfig.THINKING_MODEL,
                 created=current_time,
                 owned_by="z.ai"
             ),
             Model(
-                id=Config.SEARCH_MODEL_NAME,
+                id=ServerConfig.SEARCH_MODEL,
                 created=current_time,
                 owned_by="z.ai"
             ),
@@ -756,75 +1051,111 @@ async def chat_completions(
     """Handle chat completion requests"""
     debug_log("收到chat completions请求")
     
-    # Validate API key
-    if not authorization.startswith("Bearer "):
-        debug_log("缺少或无效的Authorization头")
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
-    
-    api_key = authorization[7:]
-    if api_key != Config.DEFAULT_KEY:
-        debug_log(f"无效的API key: {api_key}")
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    debug_log("API key验证通过")
-    debug_log(f"请求解析成功 - 模型: {request.model}, 流式: {request.stream}, 消息数: {len(request.messages)}")
-    
-    # Generate IDs
-    chat_id, msg_id = generate_request_ids()
-    
-    # Determine model features
-    is_thinking = request.model == Config.THINKING_MODEL_NAME
-    is_search = request.model == Config.SEARCH_MODEL_NAME
-    search_mcp = "deep-web-search" if is_search else ""
-    
-    # Build upstream request
-    upstream_req = UpstreamRequest(
-        stream=True,  # Always use streaming from upstream
-        chat_id=chat_id,
-        id=msg_id,
-        model="0727-360B-API",  # Actual upstream model ID
-        messages=request.messages,
-        params={},
-        features={
-            "enable_thinking": is_thinking,
-            "web_search": is_search,
-            "auto_web_search": is_search,
-        },
-        background_tasks={
-            "title_generation": False,
-            "tags_generation": False,
-        },
-        mcp_servers=[search_mcp] if search_mcp else [],
-        model_item=ModelItem(
-            id="0727-360B-API",
-            name="GLM-4.5",
-            owned_by="openai"
-        ),
-        tool_servers=[],
-        variables={
-            "{{USER_NAME}}": "User",
-            "{{USER_LOCATION}}": "Unknown",
-            "{{CURRENT_DATETIME}}": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-    )
-    
-    # Get authentication token
-    auth_token = get_auth_token()
-    
-    # Handle response based on stream flag
-    if request.stream:
-        handler = StreamResponseHandler(upstream_req, chat_id, auth_token)
-        return StreamingResponse(
-            handler.handle(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
+    try:
+        # Validate API key
+        if not authorization.startswith("Bearer "):
+            debug_log("缺少或无效的Authorization头")
+            raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+        
+        api_key = authorization[7:]
+        if api_key != ServerConfig.AUTH_TOKEN:
+            debug_log(f"无效的API key: {api_key}")
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        
+        debug_log("API key验证通过")
+        debug_log(f"请求解析成功 - 模型: {request.model}, 流式: {request.stream}, 消息数: {len(request.messages)}")
+        
+        # Generate IDs
+        chat_id, msg_id = generate_request_ids()
+        
+        # Process messages with tools
+        processed_messages = process_messages_with_tools(
+            [m.model_dump() for m in request.messages],
+            request.tools,
+            request.tool_choice
+        )
+        
+        # Convert back to Message objects
+        upstream_messages = []
+        for msg in processed_messages:
+            content = msg.get("content")
+            # Ensure content is not None for Message model
+            if content is None:
+                content = ""
+            
+            upstream_messages.append(Message(
+                role=msg["role"],
+                content=content,
+                reasoning_content=msg.get("reasoning_content")
+            ))
+        
+        # Determine model features
+        is_thinking = request.model == ServerConfig.THINKING_MODEL
+        is_search = request.model == ServerConfig.SEARCH_MODEL
+        search_mcp = "deep-web-search" if is_search else ""
+        
+        # Build upstream request
+        upstream_req = UpstreamRequest(
+            stream=True,  # Always use streaming from upstream
+            chat_id=chat_id,
+            id=msg_id,
+            model="0727-360B-API",  # Actual upstream model ID
+            messages=upstream_messages,
+            params={},
+            features={
+                "enable_thinking": is_thinking,
+                "web_search": is_search,
+                "auto_web_search": is_search,
+            },
+            background_tasks={
+                "title_generation": False,
+                "tags_generation": False,
+            },
+            mcp_servers=[search_mcp] if search_mcp else [],
+            model_item=ModelItem(
+                id="0727-360B-API",
+                name="GLM-4.5",
+                owned_by="openai"
+            ),
+            tool_servers=[],
+            variables={
+                "{{USER_NAME}}": "User",
+                "{{USER_LOCATION}}": "Unknown",
+                "{{CURRENT_DATETIME}}": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         )
-    else:
-        handler = NonStreamResponseHandler(upstream_req, chat_id, auth_token)
-        return handler.handle()
+        
+        # Get authentication token
+        auth_token = get_auth_token()
+        
+        # Check if tools are enabled and present
+        has_tools = (ServerConfig.TOOL_SUPPORT and 
+                    request.tools and 
+                    len(request.tools) > 0 and 
+                    request.tool_choice != "none")
+        
+        # Handle response based on stream flag
+        if request.stream:
+            handler = StreamResponseHandler(upstream_req, chat_id, auth_token, has_tools)
+            return StreamingResponse(
+                handler.handle(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                }
+            )
+        else:
+            handler = NonStreamResponseHandler(upstream_req, chat_id, auth_token, has_tools)
+            return handler.handle()
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        debug_log(f"处理请求时发生错误: {str(e)}")
+        import traceback
+        debug_log(f"错误堆栈: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 # =============================================================================
@@ -833,4 +1164,4 @@ async def chat_completions(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=Config.PORT, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=ServerConfig.LISTEN_PORT, reload=True)

@@ -12,6 +12,7 @@
 - **多种模型支持**：支持 GLM-4.5 基础版、思考版和搜索版
 - **调试模式**：详细的请求/响应日志记录，便于开发调试
 - **CORS 支持**：内置跨域资源共享支持
+- **Function Call 支持**：完整支持 OpenAI 格式的工具调用功能，通过智能提示注入实现，支持流式响应时的工具调用缓冲机制
 
 ## 使用场景
 
@@ -94,6 +95,219 @@
 
    注意：请将 `api_key` 替换为您在 `main.py` 中配置的 `DEFAULT_KEY` 值。
 
+### Function Call 使用示例
+
+本项目完整支持 OpenAI 格式的工具调用功能，包括流式和非流式响应。实现原理是将 OpenAI 的工具定义转换为特殊的系统提示，让模型理解并生成符合格式的工具调用。
+
+#### 基本工具调用
+
+```python
+import openai
+
+# 初始化客户端
+client = openai.OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="sk-tbkFoKzk9a531YyUNNF5"
+)
+
+# 定义天气查询工具
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "获取指定城市的天气信息",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "城市名称"
+                    },
+                    "unit": {
+                        "type": "string",
+                        "enum": ["celsius", "fahrenheit"],
+                        "description": "温度单位",
+                        "default": "celsius"
+                    }
+                },
+                "required": ["city"]
+            }
+        }
+    }
+]
+
+# 使用工具调用
+response = client.chat.completions.create(
+    model="GLM-4.5",
+    messages=[{"role": "user", "content": "北京今天天气怎么样？"}],
+    tools=tools,
+    tool_choice="auto"
+)
+
+message = response.choices[0].message
+if message.tool_calls:
+    print("模型请求调用工具:")
+    for tool_call in message.tool_calls:
+        print(f"工具名称: {tool_call.function.name}")
+        print(f"参数: {tool_call.function.arguments}")
+        print(f"调用ID: {tool_call.id}")
+else:
+    print(f"回复: {message.content}")
+```
+
+#### 流式工具调用
+
+```python
+# 流式工具调用示例
+response = client.chat.completions.create(
+    model="GLM-4.5",
+    messages=[{"role": "user", "content": "帮我计算 2 的 10 次方"}],
+    tools=[{
+        "type": "function",
+        "function": {
+            "name": "calculate",
+            "description": "执行数学计算",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "数学表达式"
+                    }
+                },
+                "required": ["expression"]
+            }
+        }
+    }],
+    stream=True
+)
+
+# 注意：工具调用模式下，流式响应会缓冲所有内容，
+# 在最后一次性返回工具调用信息
+tool_calls = None
+content = ""
+
+for chunk in response:
+    delta = chunk.choices[0].delta
+    if delta.tool_calls:
+        tool_calls = delta.tool_calls
+    if delta.content:
+        content += delta.content
+
+if tool_calls:
+    print("工具调用:")
+    for tool_call in tool_calls:
+        print(f"函数: {tool_call.function.name}")
+        print(f"参数: {tool_call.function.arguments}")
+else:
+    print("回复:", content)
+```
+
+#### 强制使用特定工具
+
+```python
+# 强制使用特定工具
+response = client.chat.completions.create(
+    model="GLM-4.5",
+    messages=[{"role": "user", "content": "今天是什么日子"}],
+    tools=[{
+        "type": "function",
+        "function": {
+            "name": "get_current_date",
+            "description": "获取当前日期和时间",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    }],
+    tool_choice={"type": "function", "function": {"name": "get_current_date"}}
+)
+
+message = response.choices[0].message
+print(f"完成原因: {response.choices[0].finish_reason}")  # tool_calls
+if message.tool_calls:
+    print("工具调用结果:", message.tool_calls[0].function.arguments)
+```
+
+#### 多工具协作
+
+```python
+# 定义多个工具
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "搜索网络信息",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "summarize_text",
+            "description": "总结文本内容",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "要总结的文本"
+                    },
+                    "max_length": {
+                        "type": "integer",
+                        "description": "最大长度",
+                        "default": 100
+                    }
+                },
+                "required": ["text"]
+            }
+        }
+    }
+]
+
+# 使用多工具
+response = client.chat.completions.create(
+    model="GLM-4.5",
+    messages=[{"role": "user", "content": "搜索一下最新的 AI 新闻并总结"}],
+    tools=tools,
+    tool_choice="auto"
+)
+
+message = response.choices[0].message
+if message.tool_calls:
+    for tool_call in message.tool_calls:
+        print(f"调用工具: {tool_call.function.name}")
+        # 在实际应用中，这里需要执行相应的函数
+        # 并将结果通过工具消息返回给模型
+```
+
+### 运行 Function Call 演示
+
+项目包含一个完整的 Function Call 演示脚本：
+
+```bash
+python function_call_demo.py
+```
+
+该脚本将演示：
+1. 基本的工具调用
+2. 数学计算工具
+3. 强制使用特定工具
+4. 流式工具调用响应
+
 ### 使用 Docker Compose
 
 1. 启动服务：
@@ -139,6 +353,7 @@
 | `DEBUG_MODE` | 调试模式开关 | `true` |
 | `THINK_TAGS_MODE` | 思考内容处理策略 | `think` (可选: `strip`, `raw`) |
 | `ANON_TOKEN_ENABLED` | 是否使用匿名 token | `true` |
+| `FUNCTION_CALL_ENABLED` | 是否启用 Function Call 功能 | `true` |
 
 ### 思考内容处理策略说明
 
