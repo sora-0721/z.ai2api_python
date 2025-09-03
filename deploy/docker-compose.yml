@@ -9,10 +9,9 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - DEBUG_MODE=false
       # Auth Configuration
       - AUTH_TOKEN=sk-your-api-key
-      # Server Configuration
+      # Server Configurations
       - DEBUG_LOGGING=true
       # Feature Configuration
       - THINKING_PROCESSING=think

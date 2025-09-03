@@ -9,6 +9,7 @@ to the Z.AI chat service with proper authentication and response formatting.
 """
 
 import json
+import os
 import re
 import time
 from datetime import datetime
@@ -28,24 +29,24 @@ class ServerConfig:
     """Centralized server configuration"""
     
     # API Configuration
-    API_ENDPOINT: str = "https://chat.z.ai/api/chat/completions"
-    AUTH_TOKEN: str = "sk-your-api-key"
-    BACKUP_TOKEN: str = "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjMxNmJjYjQ4LWZmMmYtNGExNS04NTNkLWYyYTI5YjY3ZmYwZiIsImVtYWlsIjoiR3Vlc3QtMTc1NTg0ODU4ODc4OEBndWVzdC5jb20ifQ.PktllDySS3trlyuFpTeIZf-7hl8Qu1qYF3BxjgIul0BrNux2nX9hVzIjthLXKMWAf9V0qM8Vm_iyDqkjPGsaiQ"
+    API_ENDPOINT: str = os.getenv("API_ENDPOINT", "https://chat.z.ai/api/chat/completions")
+    AUTH_TOKEN: str = os.getenv("AUTH_TOKEN", "sk-your-api-key")
+    BACKUP_TOKEN: str = os.getenv("BACKUP_TOKEN", "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjMxNmJjYjQ4LWZmMmYtNGExNS04NTNkLWYyYTI5YjY3ZmYwZiIsImVtYWlsIjoiR3Vlc3QtMTc1NTg0ODU4ODc4OEBndWVzdC5jb20ifQ.PktllDySS3trlyuFpTeIZf-7hl8Qu1qYF3BxjgIul0BrNux2nX9hVzIjthLXKMWAf9V0qM8Vm_iyDqkjPGsaiQ")
     
     # Model Configuration
-    PRIMARY_MODEL: str = "GLM-4.5"
-    THINKING_MODEL: str = "GLM-4.5-Thinking"
-    SEARCH_MODEL: str = "GLM-4.5-Search"
+    PRIMARY_MODEL: str = os.getenv("PRIMARY_MODEL", "GLM-4.5")
+    THINKING_MODEL: str = os.getenv("THINKING_MODEL", "GLM-4.5-Thinking")
+    SEARCH_MODEL: str = os.getenv("SEARCH_MODEL", "GLM-4.5-Search")
     
     # Server Configuration
-    LISTEN_PORT: int = 8080
-    DEBUG_LOGGING: bool = True
+    LISTEN_PORT: int = int(os.getenv("LISTEN_PORT", "8080"))
+    DEBUG_LOGGING: bool = os.getenv("DEBUG_LOGGING", "true").lower() == "true"
     
     # Feature Configuration
-    THINKING_PROCESSING: str = "think"  # strip: 去除<details>标签；think: 转为</think>标签；raw: 保留原样
-    ANONYMOUS_MODE: bool = True
-    TOOL_SUPPORT: bool = True
-    SCAN_LIMIT: int = 200000
+    THINKING_PROCESSING: str = os.getenv("THINKING_PROCESSING", "think")  # strip: 去除<details>标签；think: 转为</think>标签；raw: 保留原样
+    ANONYMOUS_MODE: bool = os.getenv("ANONYMOUS_MODE", "true").lower() == "true"
+    TOOL_SUPPORT: bool = os.getenv("TOOL_SUPPORT", "true").lower() == "true"
+    SCAN_LIMIT: int = int(os.getenv("SCAN_LIMIT", "200000"))
     
     # Browser Headers
     CLIENT_HEADERS: Dict[str, str] = {
@@ -1062,7 +1063,7 @@ async def chat_completions(
             debug_log(f"无效的API key: {api_key}")
             raise HTTPException(status_code=401, detail="Invalid API key")
         
-        debug_log("API key验证通过")
+        debug_log(f"API key验证通过，AUTH_TOKEN={api_key[:8]}......")
         debug_log(f"请求解析成功 - 模型: {request.model}, 流式: {request.stream}, 消息数: {len(request.messages)}")
         
         # Generate IDs
