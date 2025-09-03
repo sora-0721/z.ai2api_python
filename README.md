@@ -51,14 +51,15 @@
    ```
 
 2. 配置服务（可选）：
-   编辑 `main.py` 中的以下常量以调整服务行为：
-   - `DEFAULT_KEY`: 客户端 API 密钥
-   - `UPSTREAM_URL`: Z.ai 上游 API 地址
-   - `UPSTREAM_TOKEN`: 固定认证 token（匿名模式失败时使用）
-   - `PORT`: 服务监听端口
-   - `DEBUG_MODE`: 调试模式开关
-   - `THINK_TAGS_MODE`: 思考内容处理策略
-   - `ANON_TOKEN_ENABLED`: 匿名 token 开关
+   编辑 `main.py` 中的 `ServerConfig` 类以调整服务行为：
+   - `AUTH_TOKEN`: 客户端 API 密钥
+   - `API_ENDPOINT`: Z.ai 上游 API 地址
+   - `BACKUP_TOKEN`: 固定认证 token（匿名模式失败时使用）
+   - `LISTEN_PORT`: 服务监听端口
+   - `DEBUG_LOGGING`: 调试模式开关
+   - `THINKING_PROCESSING`: 思考内容处理策略
+   - `ANONYMOUS_MODE`: 匿名模式开关
+   - `TOOL_SUPPORT`: Function Call 功能开关
 
 3. 运行服务：
    ```bash
@@ -74,7 +75,7 @@
    # 初始化客户端
    client = openai.OpenAI(
        base_url="http://localhost:8080/v1",
-       api_key="sk-tbkFoKzk9a531YyUNNF5"  # 使用配置的 DEFAULT_KEY
+       api_key="sk-tbkFoKzk9a531YyUNNF5"  # 使用配置的 AUTH_TOKEN
    )
 
    # 流式调用示例
@@ -93,7 +94,7 @@
            print(f"\n[思考] {reasoning}\n")
    ```
 
-   注意：请将 `api_key` 替换为您在 `main.py` 中配置的 `DEFAULT_KEY` 值。
+   注意：请将 `api_key` 替换为您在 `main.py` 中配置的 `AUTH_TOKEN` 值。
 
 ### Function Call 使用示例
 
@@ -334,7 +335,7 @@ python function_call_demo.py
    docker-compose up -d --build
    ```
 
-注意：如需修改配置参数（如 API 密钥、端口等），请直接编辑 `main.py` 文件中的 `Config` 类。
+注意：如需修改配置参数（如 API 密钥、端口等），请直接编辑 `main.py` 文件中的 `ServerConfig` 类。
 
 ![1830X875/微信图片_20250903145327_21624_1.png](https://tc-new.z.wiki/autoupload/f/KTO6-pUlsq3zQ-YJ9ppdgtiO_OyvX7mIgxFBfDMDErs/20250903/AF2F/1830X875/%E5%BE%AE%E4%BF%A1%E5%9B%BE%E7%89%87_20250903145327_21624_1.png)
 
@@ -343,17 +344,17 @@ python function_call_demo.py
 
 | 配置项 | 描述 | 默认值 |
 |--------|------|--------|
-| `UPSTREAM_URL` | Z.ai 的上游 API 地址 | `https://chat.z.ai/api/chat/completions` |
-| `DEFAULT_KEY` | 下游客户端鉴权 key | `sk-tbkFoKzk9a531YyUNNF5` |
-| `UPSTREAM_TOKEN` | 上游 API 的 token (匿名模式失败时使用) | JWT token |
-| `DEFAULT_MODEL_NAME` | 默认模型名称 | `GLM-4.5` |
-| `THINKING_MODEL_NAME` | 思考模型名称 | `GLM-4.5-Thinking` |
-| `SEARCH_MODEL_NAME` | 搜索模型名称 | `GLM-4.5-Search` |
-| `PORT` | 服务监听端口 | `8080` |
-| `DEBUG_MODE` | 调试模式开关 | `true` |
-| `THINK_TAGS_MODE` | 思考内容处理策略 | `think` (可选: `strip`, `raw`) |
-| `ANON_TOKEN_ENABLED` | 是否使用匿名 token | `true` |
-| `FUNCTION_CALL_ENABLED` | 是否启用 Function Call 功能 | `true` |
+| `API_ENDPOINT` | Z.ai 的上游 API 地址 | `https://chat.z.ai/api/chat/completions` |
+| `AUTH_TOKEN` | 下游客户端鉴权 key | `sk-tbkFoKzk9a531YyUNNF5` |
+| `BACKUP_TOKEN` | 上游 API 的 token (匿名模式失败时使用) | JWT token |
+| `PRIMARY_MODEL` | 默认模型名称 | `GLM-4.5` |
+| `THINKING_MODEL` | 思考模型名称 | `GLM-4.5-Thinking` |
+| `SEARCH_MODEL` | 搜索模型名称 | `GLM-4.5-Search` |
+| `LISTEN_PORT` | 服务监听端口 | `8080` |
+| `DEBUG_LOGGING` | 调试模式开关 | `true` |
+| `THINKING_PROCESSING` | 思考内容处理策略 | `think` (可选: `strip`, `raw`) |
+| `ANONYMOUS_MODE` | 是否使用匿名 token | `true` |
+| `TOOL_SUPPORT` | 是否启用 Function Call 功能 | `true` |
 
 ### 思考内容处理策略说明
 
