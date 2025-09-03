@@ -8,6 +8,15 @@ services:
       - "8080:8080"
     environment:
       - DEBUG_MODE=false
+      # Auth Configuration
+      - AUTH_TOKEN=sk-your-api-key
+      # Server Configuration
+      - DEBUG_LOGGING=true
+      # Feature Configuration
+      - THINKING_PROCESSING=think
+      - ANONYMOUS_MODE=true
+      - TOOL_SUPPORT=true
+      - SCAN_LIMIT=200000
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/v1/models"]
