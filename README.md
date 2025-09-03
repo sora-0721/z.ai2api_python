@@ -1,14 +1,15 @@
-# Z.AI OpenAI API 代理服务
+# Z.AI OpenAI & Anthropic API 代理服务
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python: 3.8+](https://img.shields.io/badge/python-3.8+-green.svg)
 ![FastAPI](https://img.shields.io/badge/framework-FastAPI-009688.svg)
 
-为 Z.AI 提供 OpenAI API 兼容接口的轻量级代理服务，支持 GLM-4.5 系列模型的完整功能。
+为 Z.AI 提供 OpenAI 和 Anthropic API 兼容接口的轻量级代理服务，支持 GLM-4.5 系列模型的完整功能。
 
 ## ✨ 核心特性
 
 - 🔌 **完全兼容 OpenAI API** - 无缝集成现有应用
+- 🎭 **兼容 Anthropic API** - 支持 Claude CLI 客户端直接接入
 - 🚀 **高性能流式响应** - Server-Sent Events (SSE) 支持
 - 🛠️ **Function Call 支持** - 完整的工具调用功能
 - 🧠 **思考模式支持** - 智能处理模型推理过程
@@ -45,6 +46,8 @@ python main.py
 
 ### 基础使用
 
+#### OpenAI API 客户端
+
 ```python
 import openai
 
@@ -62,6 +65,29 @@ response = client.chat.completions.create(
 )
 
 print(response.choices[0].message.content)
+```
+
+#### Anthropic API 客户端
+
+```python
+import anthropic
+
+# 初始化客户端
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/v1",
+    api_key="your-anthropic-token"  # 替换为你的 ANTHROPIC_API_KEY
+)
+
+# 普通对话
+message = client.messages.create(
+    model="GLM-4.5",
+    max_tokens=1024,
+    messages=[
+        {"role": "user", "content": "你好，介绍一下 Python"}
+    ]
+)
+
+print(message.content[0].text)
 ```
 
 ### Docker 部署
@@ -134,7 +160,7 @@ for chunk in response:
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `AUTH_TOKEN` | `sk-your-api-key` | 客户端认证密钥 |
+| `AUTH_TOKEN` | `sk-your-api-key` | 客户端认证密钥（OpenAI 和 Anthropic 共用） |
 | `API_ENDPOINT` | `https://chat.z.ai/api/chat/completions` | 上游 API 地址 |
 | `LISTEN_PORT` | `8080` | 服务监听端口 |
 | `DEBUG_LOGGING` | `true` | 调试日志开关 |
@@ -205,7 +231,10 @@ if response.choices[0].message.tool_calls:
 ## ❓ 常见问题
 
 **Q: 如何获取 AUTH_TOKEN？**
-A: `AUTH_TOKEN` 为自己自定义的api key，在 `main.py` 的 `ServerConfig` 类中或通过环境变量配置，需要保证客户端与服务端一致。
+A: `AUTH_TOKEN` 为自己自定义的api key，在环境变量中配置，需要保证客户端与服务端一致。
+
+**Q: ANTHROPIC_API_KEY 如何配置？**
+A: 默认使用 `AUTH_TOKEN` 的值，两个 API 使用相同的认证密钥。如需分开配置，可单独设置 `ANTHROPIC_API_KEY` 环境变量。
 
 **Q: 匿名模式是什么？**
 A: 匿名模式使用临时 token，避免对话历史共享，保护隐私。
@@ -216,17 +245,23 @@ A: 通过智能提示注入实现，将工具定义转换为系统提示。
 **Q: 支持哪些 OpenAI 功能？**
 A: 支持聊天完成、模型列表、流式响应、工具调用等核心功能。
 
+**Q: 支持 Anthropic API 的哪些功能？**
+A: 支持 messages 创建、流式响应、系统提示等核心功能。
+
 **Q: 如何自定义配置？**
-A: 通过环境变量或修改 `main.py` 中的 `ServerConfig` 类。
+A: 通过环境变量配置，推荐使用 `.env` 文件。
 
 ## 🏗️ 技术架构
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  OpenAI     │     │   Proxy     │     │    Z.AI     │
-│  Client     │────▶│   Server    │────▶│    API      │
-│             │     │             │     │             │
-└─────────────┘     └─────────────┘     └─────────────┘
+┌──────────────┐     ┌─────────────┐     ┌─────────────┐
+│   OpenAI     │     │             │     │             │
+│  Client      │────▶│   Proxy     │────▶│    Z.AI     │
+└──────────────┘     │   Server    │     │    API      │
+┌──────────────┐     │             │     │             │
+│  Anthropic    │────▶│             │     │             │
+│  Client      │     │             │     │             │
+└──────────────┘     └─────────────┘     └─────────────┘
 ```
 
 - **FastAPI** - 高性能 Web 框架
