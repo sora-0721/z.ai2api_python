@@ -41,6 +41,11 @@ async def list_models():
                 created=current_time,
                 owned_by="z.ai"
             ),
+            Model(
+                id=settings.AIR_MODEL,
+                created=current_time,
+                owned_by="z.ai"
+            ),
         ]
     )
     return response
@@ -55,17 +60,20 @@ async def chat_completions(
     debug_log("收到chat completions请求")
     
     try:
-        # Validate API key
-        if not authorization.startswith("Bearer "):
-            debug_log("缺少或无效的Authorization头")
-            raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
-        
-        api_key = authorization[7:]
-        if api_key != settings.AUTH_TOKEN:
-            debug_log(f"无效的API key: {api_key}")
-            raise HTTPException(status_code=401, detail="Invalid API key")
-        
-        debug_log(f"API key验证通过，AUTH_TOKEN={api_key[:8]}......")
+        # Validate API key (skip if SKIP_AUTH_TOKEN is enabled)
+        if not settings.SKIP_AUTH_TOKEN:
+            if not authorization.startswith("Bearer "):
+                debug_log("缺少或无效的Authorization头")
+                raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+            
+            api_key = authorization[7:]
+            if api_key != settings.AUTH_TOKEN:
+                debug_log(f"无效的API key: {api_key}")
+                raise HTTPException(status_code=401, detail="Invalid API key")
+            
+            debug_log(f"API key验证通过，AUTH_TOKEN={api_key[:8]}......")
+        else:
+            debug_log("SKIP_AUTH_TOKEN已启用，跳过API key验证")
         debug_log(f"请求解析成功 - 模型: {request.model}, 流式: {request.stream}, 消息数: {len(request.messages)}")
         
         # Generate IDs
@@ -95,14 +103,23 @@ async def chat_completions(
         # Determine model features
         is_thinking = request.model == settings.THINKING_MODEL
         is_search = request.model == settings.SEARCH_MODEL
+        is_air = request.model == settings.AIR_MODEL
         search_mcp = "deep-web-search" if is_search else ""
+        
+        # Determine upstream model ID based on requested model
+        if is_air:
+            upstream_model_id = "0727-106B-API"  # AIR model upstream ID
+            upstream_model_name = "GLM-4.5-Air"
+        else:
+            upstream_model_id = "0727-360B-API"  # Default upstream model ID
+            upstream_model_name = "GLM-4.5"
         
         # Build upstream request
         upstream_req = UpstreamRequest(
             stream=True,  # Always use streaming from upstream
             chat_id=chat_id,
             id=msg_id,
-            model="0727-360B-API",  # Actual upstream model ID
+            model=upstream_model_id,  # Dynamic upstream model ID
             messages=upstream_messages,
             params={},
             features={
@@ -116,8 +133,8 @@ async def chat_completions(
             },
             mcp_servers=[search_mcp] if search_mcp else [],
             model_item=ModelItem(
-                id="0727-360B-API",
-                name="GLM-4.5",
+                id=upstream_model_id,
+                name=upstream_model_name,
                 owned_by="openai"
             ),
             tool_servers=[],

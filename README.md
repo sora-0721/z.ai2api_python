@@ -3,6 +3,7 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python: 3.8+](https://img.shields.io/badge/python-3.8+-green.svg)
 ![FastAPI](https://img.shields.io/badge/framework-FastAPI-009688.svg)
+![Version: 1.1.0](https://img.shields.io/badge/version-1.1.0-brightgreen.svg)
 
 为 Z.AI 提供 OpenAI 和 Anthropic API 兼容接口的轻量级代理服务，支持 GLM-4.5 系列模型的完整功能。
 
@@ -17,6 +18,7 @@
 - 🐳 **Docker 部署** - 一键容器化部署
 - 🛡️ **会话隔离** - 匿名模式保护隐私
 - 🔧 **高度可配置** - 环境变量灵活配置
+- 📊 **多模型架构** - 灵活的上游模型映射机制
 
 ## 🚀 快速开始
 
@@ -101,11 +103,12 @@ docker-compose up -d
 
 ### 支持的模型
 
-| 模型 | 描述 | 特性 |
-|------|------|------|
-| `GLM-4.5` | 标准模型 | 通用对话，平衡性能 |
-| `GLM-4.5-Thinking` | 思考模型 | 显示推理过程，透明度高 |
-| `GLM-4.5-Search` | 搜索模型 | 实时网络搜索，信息更新 |
+| 模型 | 上游ID | 描述 | 特性 |
+|------|--------|------|------|
+| `GLM-4.5` | 0727-360B-API | 标准模型 | 通用对话，平衡性能 |
+| `GLM-4.5-Thinking` | 0727-360B-API | 思考模型 | 显示推理过程，透明度高 |
+| `GLM-4.5-Search` | 0727-360B-API | 搜索模型 | 实时网络搜索，信息更新 |
+| `GLM-4.5-Air` | 0727-106B-API | 轻量模型 | 快速响应，高效推理 |
 
 ### Function Call 功能
 
@@ -161,12 +164,20 @@ for chunk in response:
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `AUTH_TOKEN` | `sk-your-api-key` | 客户端认证密钥（OpenAI 和 Anthropic 共用） |
+| `ANTHROPIC_API_KEY` | `sk-your-api-key` | Anthropic API 认证密钥（默认使用 AUTH_TOKEN） |
 | `API_ENDPOINT` | `https://chat.z.ai/api/chat/completions` | 上游 API 地址 |
 | `LISTEN_PORT` | `8080` | 服务监听端口 |
+| `PRIMARY_MODEL` | `GLM-4.5` | 主要模型名称 |
+| `THINKING_MODEL` | `GLM-4.5-Thinking` | 思考模型名称 |
+| `SEARCH_MODEL` | `GLM-4.5-Search` | 搜索模型名称 |
+| `AIR_MODEL` | `GLM-4.5-Air` | Air 模型名称 |
 | `DEBUG_LOGGING` | `true` | 调试日志开关 |
 | `THINKING_PROCESSING` | `think` | 思考内容处理策略 |
 | `ANONYMOUS_MODE` | `true` | 匿名模式开关 |
 | `TOOL_SUPPORT` | `true` | Function Call 功能开关 |
+| `SKIP_AUTH_TOKEN` | `false` | 跳过认证令牌验证 |
+| `SCAN_LIMIT` | `200000` | 扫描限制 |
+| `BACKUP_TOKEN` | `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...` | 备用认证令牌 |
 
 ### 思考内容处理策略
 
@@ -199,7 +210,7 @@ def chat_with_ai(message):
 ### 2. 多模型对比测试
 
 ```python
-models = ["GLM-4.5", "GLM-4.5-Thinking", "GLM-4.5-Search"]
+models = ["GLM-4.5", "GLM-4.5-Thinking", "GLM-4.5-Search", "GLM-4.5-Air"]
 
 for model in models:
     response = client.chat.completions.create(
@@ -248,26 +259,79 @@ A: 支持聊天完成、模型列表、流式响应、工具调用等核心功�
 **Q: 支持 Anthropic API 的哪些功能？**
 A: 支持 messages 创建、流式响应、系统提示等核心功能。
 
+**Q: 如何选择合适的模型？**
+A: 
+- **GLM-4.5**: 通用场景，性能和效果平衡
+- **GLM-4.5-Thinking**: 需要了解推理过程的场景
+- **GLM-4.5-Search**: 需要实时信息的场景
+- **GLM-4.5-Air**: 高并发、低延迟要求的场景
+
 **Q: 如何自定义配置？**
 A: 通过环境变量配置，推荐使用 `.env` 文件。
 
 ## 🏗️ 技术架构
 
 ```
-┌──────────────┐     ┌─────────────┐     ┌─────────────┐
-│   OpenAI     │     │             │     │             │
-│  Client      │────▶│   Proxy     │────▶│    Z.AI     │
-└──────────────┘     │   Server    │     │    API      │
-┌──────────────┐     │             │     │             │
-│  Anthropic    │────▶│             │     │             │
-│  Client      │     │             │     │             │
-└──────────────┘     └─────────────┘     └─────────────┘
+┌──────────────┐      ┌─────────────────────────┐      ┌─────────────────┐
+│   OpenAI     │      │                         │      │                 │
+│  Client      │────▶│    FastAPI Router       │────▶│   Z.AI API      │
+└──────────────┘      │                         │      │                 │
+┌──────────────┐      │ ┌─────────────────────┐ │      │ ┌─────────────┐ │
+│  Anthropic   │────▶│ │   OpenAI Endpoint   │ │      │ │0727-360B-API│ │
+│  Client      │      │ └─────────────────────┘ │      │ └─────────────┘ │
+└──────────────┘      │ ┌─────────────────────┐ │      │ ┌─────────────┐ │
+                      │ │  Anthropic Endpoint │ │────▶│ │0727-106B-API│ │
+                      │ └─────────────────────┘ │      │ └─────────────┘ │
+                      │ ┌─────────────────────┐ │      │                 │
+                      │ │   Models Endpoint   │ │      └─────────────────┘
+                      │ └─────────────────────┘ │
+                      └─────────────────────────┘
+                              Proxy Server
 ```
 
-- **FastAPI** - 高性能 Web 框架
-- **Pydantic** - 数据验证和序列化
-- **Uvicorn** - ASGI 服务器
-- **Requests** - HTTP 客户端
+### 核心组件
+
+- **FastAPI** - 高性能 Web 框架，支持异步处理
+- **Pydantic** - 数据验证和序列化，确保 API 兼容性
+- **Uvicorn** - ASGI 服务器，提供高性能服务
+- **Requests** - HTTP 客户端，与上游 API 通信
+
+### 架构特点
+
+- **模块化设计** - 清晰的目录结构，易于维护和扩展
+- **多协议支持** - 同时支持 OpenAI 和 Anthropic API 协议
+- **动态路由** - 根据请求模型自动选择上游服务
+- **流式处理** - 完整支持 SSE 流式响应
+- **类型安全** - 基于 Pydantic 的严格类型检查
+
+### 项目结构
+
+```
+z.ai2api_python/
+├── app/
+│   ├── api/
+│   │   ├── __init__.py
+│   │   ├── openai.py          # OpenAI API 路由
+│   │   └── anthropic.py       # Anthropic API 路由
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── config.py          # 配置管理
+│   │   └── response_handlers.py  # 响应处理器
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── schemas.py         # 数据模型定义
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── helpers.py         # 工具函数
+│   │   ├── tools.py           # Function Call 处理
+│   │   └── sse_parser.py      # SSE 解析器
+│   └── __init__.py
+├── tests/                     # 测试文件
+├── deploy/                    # 部署配置
+├── main.py                    # 应用入口
+├── requirements.txt           # 依赖列表
+└── README.md                  # 项目文档
+```
 
 ## 🤝 贡献指南
 

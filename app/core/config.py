@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     PRIMARY_MODEL: str = os.getenv("PRIMARY_MODEL", "GLM-4.5")
     THINKING_MODEL: str = os.getenv("THINKING_MODEL", "GLM-4.5-Thinking")
     SEARCH_MODEL: str = os.getenv("SEARCH_MODEL", "GLM-4.5-Search")
+    AIR_MODEL: str = os.getenv("AIR_MODEL", "GLM-4.5-Air")
     
     # Server Configuration
     LISTEN_PORT: int = int(os.getenv("LISTEN_PORT", "8080"))
@@ -30,6 +31,7 @@ class Settings(BaseSettings):
     ANONYMOUS_MODE: bool = os.getenv("ANONYMOUS_MODE", "true").lower() == "true"
     TOOL_SUPPORT: bool = os.getenv("TOOL_SUPPORT", "true").lower() == "true"
     SCAN_LIMIT: int = int(os.getenv("SCAN_LIMIT", "200000"))
+    SKIP_AUTH_TOKEN: bool = os.getenv("SKIP_AUTH_TOKEN", "false").lower() == "true"
     
     # Browser Headers
     CLIENT_HEADERS: Dict[str, str] = {

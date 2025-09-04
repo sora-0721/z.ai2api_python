@@ -115,18 +115,21 @@ async def handle_anthropic_message(
     """Handle Anthropic message requests"""
     debug_log("收到 Anthropic message 请求")
     
-    # 验证 API key
-    api_key = None
-    if x_api_key:
-        api_key = x_api_key
-    elif authorization and authorization.startswith("Bearer "):
-        api_key = authorization[7:]
-    
-    if not api_key or api_key != settings.ANTHROPIC_API_KEY:
-        debug_log(f"无效的 API key: {api_key}")
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    debug_log(f"API key 验证通过")
+    # 验证 API key (skip if SKIP_AUTH_TOKEN is enabled)
+    if not settings.SKIP_AUTH_TOKEN:
+        api_key = None
+        if x_api_key:
+            api_key = x_api_key
+        elif authorization and authorization.startswith("Bearer "):
+            api_key = authorization[7:]
+        
+        if not api_key or api_key != settings.ANTHROPIC_API_KEY:
+            debug_log(f"无效的 API key: {api_key}")
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        
+        debug_log(f"API key 验证通过")
+    else:
+        debug_log("SKIP_AUTH_TOKEN已启用，跳过API key验证")
     debug_log(f"请求解析成功 - 模型: {req.model}, 流式: {req.stream}, 消息数: {len(req.messages)}")
     
     # 确定上游模型和功能

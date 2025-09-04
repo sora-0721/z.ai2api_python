@@ -11,6 +11,8 @@ services:
     environment:
       # Auth Configuration
       - AUTH_TOKEN=sk-your-api-key
+      # 是否跳过api key验证
+      - SKIP_AUTH_TOKEN=false
       # Server Configurations
       - DEBUG_LOGGING=true
       # Feature Configuration
