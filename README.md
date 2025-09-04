@@ -38,7 +38,7 @@ uv sync
 uv run python main.py
 
 # 或使用 pip (推荐使用清华源)
-pip install -r requirement.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 python main.py
 ```
 
