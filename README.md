@@ -69,7 +69,6 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-
 ### Docker 部署
 
 ```bash
@@ -81,12 +80,13 @@ docker-compose up -d
 
 ### 支持的模型
 
-| 模型 | 上游ID | 描述 | 特性 |
-|------|--------|------|------|
-| `GLM-4.5` | 0727-360B-API | 标准模型 | 通用对话，平衡性能 |
-| `GLM-4.5-Thinking` | 0727-360B-API | 思考模型 | 显示推理过程，透明度高 |
-| `GLM-4.5-Search` | 0727-360B-API | 搜索模型 | 实时网络搜索，信息更新 |
-| `GLM-4.5-Air` | 0727-106B-API | 轻量模型 | 快速响应，高效推理 |
+| 模型               | 上游 ID       | 描述        | 特性                   |
+| ------------------ | ------------- | ----------- | ---------------------- |
+| `GLM-4.5`          | 0727-360B-API | 标准模型    | 通用对话，平衡性能     |
+| `GLM-4.5-Thinking` | 0727-360B-API | 思考模型    | 显示推理过程，透明度高 |
+| `GLM-4.5-Search`   | 0727-360B-API | 搜索模型    | 实时网络搜索，信息更新 |
+| `GLM-4.5-Air`      | 0727-106B-API | 轻量模型    | 快速响应，高效推理     |
+| `GLM-4.5V`         | glm-4.5v      | ❌ 暂不支持 |                        |
 
 ### Function Call 功能
 
@@ -128,7 +128,7 @@ response = client.chat.completions.create(
 for chunk in response:
     content = chunk.choices[0].delta.content
     reasoning = chunk.choices[0].delta.reasoning_content
-    
+
     if content:
         print(content, end="")
     if reasoning:
@@ -139,22 +139,22 @@ for chunk in response:
 
 ### 环境变量配置
 
-| 变量名 | 默认值 | 说明 |
-|--------|--------|------|
-| `AUTH_TOKEN` | `sk-your-api-key` | 客户端认证密钥 |
-| `API_ENDPOINT` | `https://chat.z.ai/api/chat/completions` | 上游 API 地址 |
-| `LISTEN_PORT` | `8080` | 服务监听端口 |
-| `PRIMARY_MODEL` | `GLM-4.5` | 主要模型名称 |
-| `THINKING_MODEL` | `GLM-4.5-Thinking` | 思考模型名称 |
-| `SEARCH_MODEL` | `GLM-4.5-Search` | 搜索模型名称 |
-| `AIR_MODEL` | `GLM-4.5-Air` | Air 模型名称 |
-| `DEBUG_LOGGING` | `true` | 调试日志开关 |
-| `THINKING_PROCESSING` | `think` | 思考内容处理策略 |
-| `ANONYMOUS_MODE` | `true` | 匿名模式开关 |
-| `TOOL_SUPPORT` | `true` | Function Call 功能开关 |
-| `SKIP_AUTH_TOKEN` | `false` | 跳过认证令牌验证 |
-| `SCAN_LIMIT` | `200000` | 扫描限制 |
-| `BACKUP_TOKEN` | `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...` | 备用认证令牌 |
+| 变量名                | 默认值                                    | 说明                   |
+| --------------------- | ----------------------------------------- | ---------------------- |
+| `AUTH_TOKEN`          | `sk-your-api-key`                         | 客户端认证密钥         |
+| `API_ENDPOINT`        | `https://chat.z.ai/api/chat/completions`  | 上游 API 地址          |
+| `LISTEN_PORT`         | `8080`                                    | 服务监听端口           |
+| `PRIMARY_MODEL`       | `GLM-4.5`                                 | 主要模型名称           |
+| `THINKING_MODEL`      | `GLM-4.5-Thinking`                        | 思考模型名称           |
+| `SEARCH_MODEL`        | `GLM-4.5-Search`                          | 搜索模型名称           |
+| `AIR_MODEL`           | `GLM-4.5-Air`                             | Air 模型名称           |
+| `DEBUG_LOGGING`       | `true`                                    | 调试日志开关           |
+| `THINKING_PROCESSING` | `think`                                   | 思考内容处理策略       |
+| `ANONYMOUS_MODE`      | `true`                                    | 匿名模式开关           |
+| `TOOL_SUPPORT`        | `true`                                    | Function Call 功能开关 |
+| `SKIP_AUTH_TOKEN`     | `false`                                   | 跳过认证令牌验证       |
+| `SCAN_LIMIT`          | `200000`                                  | 扫描限制               |
+| `BACKUP_TOKEN`        | `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...` | 备用认证令牌           |
 
 ### 思考内容处理策略
 
@@ -219,13 +219,14 @@ if response.choices[0].message.tool_calls:
 ## ❓ 常见问题
 
 **Q: 如何获取 AUTH_TOKEN？**
-A: `AUTH_TOKEN` 为自己自定义的api key，在环境变量中配置，需要保证客户端与服务端一致。
+A: `AUTH_TOKEN` 为自己自定义的 api key，在环境变量中配置，需要保证客户端与服务端一致。
 
 **Q: 如何通过 Claude Code 使用本服务？**
 
-A: 创建 [zai.js](https://gist.githubusercontent.com/musistudio/b35402d6f9c95c64269c7666b8405348/raw/f108d66fa050f308387938f149a2b14a295d29e9/gistfile1.txt) 这个ccr插件放在`./.claude-code-router/plugins`目录下，配置 `./.claude-code-router/config.json` 指向本服务地址，使用 `AUTH_TOKEN` 进行认证。
+A: 创建 [zai.js](https://gist.githubusercontent.com/musistudio/b35402d6f9c95c64269c7666b8405348/raw/f108d66fa050f308387938f149a2b14a295d29e9/gistfile1.txt) 这个 ccr 插件放在`./.claude-code-router/plugins`目录下，配置 `./.claude-code-router/config.json` 指向本服务地址，使用 `AUTH_TOKEN` 进行认证。
 
 示例配置：
+
 ```json
 {
   "LOG": false,
@@ -248,14 +249,9 @@ A: 创建 [zai.js](https://gist.githubusercontent.com/musistudio/b35402d6f9c95c6
       "name": "GLM",
       "api_base_url": "http://127.0.0.1:8080/v1/chat/completions",
       "api_key": "sk-your-api-key",
-      "models": [
-        "GLM-4.5",
-        "GLM-4.5-Air"
-      ],
+      "models": ["GLM-4.5", "GLM-4.5-Air"],
       "transformers": {
-        "use": [
-          "zai"
-        ]
+        "use": ["zai"]
       }
     }
   ],
@@ -295,7 +291,8 @@ A: 支持聊天完成、模型列表、流式响应、工具调用等核心功�
 A: 改进了工具调用的请求响应结构，支持更复杂的工具链调用和并行执行。
 
 **Q: 如何选择合适的模型？**
-A: 
+A:
+
 - **GLM-4.5**: 通用场景，性能和效果平衡
 - **GLM-4.5-Thinking**: 需要了解推理过程的场景
 - **GLM-4.5-Search**: 需要实时信息的场景
