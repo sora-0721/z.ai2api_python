@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 """
 Main application entry point
 """
@@ -7,6 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core import openai
+from app.utils.reload_config import RELOAD_CONFIG
+
+from granian import Granian
 
 # Create FastAPI app
 app = FastAPI(
@@ -40,7 +46,16 @@ async def root():
     return {"message": "OpenAI Compatible API Server"}
 
 
-if __name__ == "__main__":
-    import uvicorn
+def run_server():
+    Granian(
+        "main:app",
+        interface="asgi",
+        address="0.0.0.0",
+        port=settings.LISTEN_PORT,
+        reload=True,
+        **RELOAD_CONFIG,
+    ).serve()
 
-    uvicorn.run("main:app", host="0.0.0.0", port=settings.LISTEN_PORT, reload=True)
+
+if __name__ == "__main__":
+    run_server()
