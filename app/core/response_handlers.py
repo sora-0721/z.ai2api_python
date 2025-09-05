@@ -205,26 +205,28 @@ class StreamResponseHandler(ResponseHandler):
     
     def _send_end_chunk(self) -> Generator[str, None, None]:
         """Send end chunk and DONE signal"""
+        finish_reason = "stop"
+        
         if self.has_tools:
             # Try to extract tool calls from buffered content
             self.tool_calls = extract_tool_invocations(self.buffered_content)
             
             if self.tool_calls:
-                # Send tool calls
-                tool_calls_list = []
+                # Send tool calls with proper format
                 for i, tc in enumerate(self.tool_calls):
-                    tool_calls_list.append({
+                    tool_call_delta = {
                         "index": i,
                         "id": tc.get("id"),
                         "type": tc.get("type", "function"),
                         "function": tc.get("function", {}),
-                    })
+                    }
+                    
+                    out_chunk = create_openai_response_chunk(
+                        model=settings.PRIMARY_MODEL,
+                        delta=Delta(tool_calls=[tool_call_delta])
+                    )
+                    yield f"data: {out_chunk.model_dump_json()}\n\n"
                 
-                out_chunk = create_openai_response_chunk(
-                    model=settings.PRIMARY_MODEL,
-                    delta=Delta(tool_calls=tool_calls_list)
-                )
-                yield f"data: {out_chunk.model_dump_json()}\n\n"
                 finish_reason = "tool_calls"
             else:
                 # Send regular content
@@ -235,9 +237,6 @@ class StreamResponseHandler(ResponseHandler):
                         delta=Delta(content=trimmed_content)
                     )
                     yield f"data: {content_chunk.model_dump_json()}\n\n"
-                finish_reason = "stop"
-        else:
-            finish_reason = "stop"
         
         # Send final chunk
         end_chunk = create_openai_response_chunk(
@@ -305,9 +304,12 @@ class NonStreamResponseHandler(ResponseHandler):
                 # Content must be null when tool_calls are present (OpenAI spec)
                 message_content = None
                 finish_reason = "tool_calls"
+                debug_log(f"提取到工具调用: {json.dumps(tool_calls, ensure_ascii=False)}")
             else:
                 # Remove tool JSON from content
                 message_content = remove_tool_json_content(final_content)
+                if not message_content:
+                    message_content = final_content  # 保留原内容如果清理后为空
         
         # Build response
         response_data = OpenAIResponse(

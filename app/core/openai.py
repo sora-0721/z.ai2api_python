@@ -14,7 +14,7 @@ from app.models.schemas import (
     ModelsResponse, Model
 )
 from app.utils.helpers import debug_log, generate_request_ids, get_auth_token
-from app.utils.tools import process_messages_with_tools
+from app.utils.tools import process_messages_with_tools, content_to_string
 from app.core.response_handlers import StreamResponseHandler, NonStreamResponseHandler
 
 router = APIRouter()
@@ -89,10 +89,7 @@ async def chat_completions(
         # Convert back to Message objects
         upstream_messages: List[Message] = []
         for msg in processed_messages:
-            content = msg.get("content")
-            # Ensure content is not None for Message model
-            if content is None:
-                content = ""
+            content = content_to_string(msg.get("content"))
             
             upstream_messages.append(Message(
                 role=msg["role"],

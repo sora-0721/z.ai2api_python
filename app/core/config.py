@@ -13,7 +13,6 @@ class Settings(BaseSettings):
     # API Configuration
     API_ENDPOINT: str = os.getenv("API_ENDPOINT", "https://chat.z.ai/api/chat/completions")
     AUTH_TOKEN: str = os.getenv("AUTH_TOKEN", "sk-your-api-key")
-    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", AUTH_TOKEN)
     BACKUP_TOKEN: str = os.getenv("BACKUP_TOKEN", "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjMxNmJjYjQ4LWZmMmYtNGExNS04NTNkLWYyYTI5YjY3ZmYwZiIsImVtYWlsIjoiR3Vlc3QtMTc1NTg0ODU4ODc4OEBndWVzdC5jb20ifQ.PktllDySS3trlyuFpTeIZf-7hl8Qu1qYF3BxjgIul0BrNux2nX9hVzIjthLXKMWAf9V0qM8Vm_iyDqkjPGsaiQ")
     
     # Model Configuration

@@ -2,6 +2,6 @@
 Application package initialization
 """
 
-from app import api, core, models, utils
+from app import core, models, utils
 
-__all__ = ["api", "core", "models", "utils"]
+__all__ = ["core", "models", "utils"]

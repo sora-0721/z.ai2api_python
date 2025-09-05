@@ -6,10 +6,16 @@ from typing import Dict, List, Optional, Any, Union, Literal
 from pydantic import BaseModel
 
 
+class ContentPart(BaseModel):
+    """Content part model for OpenAI's new content format"""
+    type: str
+    text: Optional[str] = None
+
+
 class Message(BaseModel):
     """Chat message model"""
     role: str
-    content: Optional[str] = None
+    content: Optional[Union[str, List[ContentPart]]] = None
     reasoning_content: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
 
@@ -125,21 +131,3 @@ class ModelsResponse(BaseModel):
     data: List[Model]
 
 
-# Anthropic API Models
-class ContentBlock(BaseModel):
-    type: str
-    text: str
-
-
-class AnthropicMessage(BaseModel):
-    role: Literal["user", "assistant"]
-    content: Union[str, List[ContentBlock]]
-
-
-class AnthropicRequest(BaseModel):
-    model: str
-    messages: List[AnthropicMessage]
-    system: Optional[Union[str, List[ContentBlock]]] = None
-    max_tokens: int = 1024
-    stream: bool = False
-    temperature: Optional[float] = None
