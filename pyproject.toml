@@ -8,10 +8,8 @@ version = "0.1.0"
 description = "一个为 Z.ai 提供 OpenAI 兼容接口的 Python 代理服务"
 readme = "README.md"
 requires-python = ">=3.9,<=3.12"
-license = {text = "MIT"}
-authors = [
-    {name = "Contributors"}
-]
+license = { text = "MIT" }
+authors = [{ name = "Contributors" }]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -27,13 +25,13 @@ classifiers = [
 ]
 dependencies = [
     "fastapi==0.104.1",
-    "granian==2.5.2",
+    "granian[reload]==2.5.2",
     "requests==2.32.5",
     "pydantic==2.11.7",
     "pydantic-settings==2.10.1",
     "pydantic-core==2.33.2",
     "typing-inspection==0.4.1",
-    "fake-useragent==2.2.0"
+    "fake-useragent==2.2.0",
 ]
 
 [project.scripts]

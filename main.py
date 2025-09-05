@@ -52,7 +52,7 @@ def run_server():
         interface="asgi",
         address="0.0.0.0",
         port=settings.LISTEN_PORT,
-        reload=True,
+        reload=False,   # 生产环境请关闭热重载
         **RELOAD_CONFIG,
     ).serve()
 
