@@ -144,17 +144,13 @@ for chunk in response:
 | `AUTH_TOKEN`          | `sk-your-api-key`                         | 客户端认证密钥         |
 | `API_ENDPOINT`        | `https://chat.z.ai/api/chat/completions`  | 上游 API 地址          |
 | `LISTEN_PORT`         | `8080`                                    | 服务监听端口           |
-| `PRIMARY_MODEL`       | `GLM-4.5`                                 | 主要模型名称           |
-| `THINKING_MODEL`      | `GLM-4.5-Thinking`                        | 思考模型名称           |
-| `SEARCH_MODEL`        | `GLM-4.5-Search`                          | 搜索模型名称           |
-| `AIR_MODEL`           | `GLM-4.5-Air`                             | Air 模型名称           |
 | `DEBUG_LOGGING`       | `true`                                    | 调试日志开关           |
 | `THINKING_PROCESSING` | `think`                                   | 思考内容处理策略       |
 | `ANONYMOUS_MODE`      | `true`                                    | 匿名模式开关           |
 | `TOOL_SUPPORT`        | `true`                                    | Function Call 功能开关 |
 | `SKIP_AUTH_TOKEN`     | `false`                                   | 跳过认证令牌验证       |
 | `SCAN_LIMIT`          | `200000`                                  | 扫描限制               |
-| `BACKUP_TOKEN`        | `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...` | 备用认证令牌           |
+| `BACKUP_TOKEN`        | `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...` | Z.ai 固定访问令牌      |
 
 ### 思考内容处理策略
 
@@ -184,21 +180,7 @@ def chat_with_ai(message):
     return response.choices[0].message.content
 ```
 
-### 2. 多模型对比测试
-
-```python
-models = ["GLM-4.5", "GLM-4.5-Thinking", "GLM-4.5-Search", "GLM-4.5-Air"]
-
-for model in models:
-    response = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": "什么是机器学习？"}]
-    )
-    print(f"\n=== {model} ===")
-    print(response.choices[0].message.content)
-```
-
-### 3. 工具调用集成
+### 2. 工具调用集成
 
 ```python
 # 结合外部 API
@@ -300,6 +282,27 @@ A:
 
 **Q: 如何自定义配置？**
 A: 通过环境变量配置，推荐使用 `.env` 文件。
+
+## 🔑 获取 Z.ai API Token
+
+要使用完整的多模态功能，需要获取正式的 Z.ai API Token：
+
+### 方式 1: 通过 Z.ai 网站
+
+1. 访问 [Z.ai 官网](https://chat.z.ai)
+2. 注册账户并登录，进入 [Z.ai API Keys](https://z.ai/manage-apikey/apikey-list) 设置页面，在该页面设置 _**个人 API Token**_
+3. 将 Token 放置在 `BACKUP_TOKEN` 环境变量中
+
+### 方式 2: 浏览器开发者工具（临时方案）
+
+1. 打开 [Z.ai 聊天界面](https://chat.z.ai)
+2. 按 F12 打开开发者工具
+3. 切换到 "Application" 或 "存储" 标签
+4. 查看 Local Storage 中的认证 token
+5. 复制 token 值设置为环境变量
+
+> ⚠️ **注意**: 方式 2 获取的 token 可能有时效性，建议使用方式 1 获取长期有效的 API Token。
+> ❗ **重要提示**: 多模态模型需要**官方 Z.ai API 非匿名 Token**，匿名 token 不支持多媒体处理。
 
 ## 🏗️ 技术架构
 
