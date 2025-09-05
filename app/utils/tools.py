@@ -156,7 +156,8 @@ def process_messages_with_tools(
 
 # Tool Extraction Patterns
 TOOL_CALL_FENCE_PATTERN = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
-TOOL_CALL_INLINE_PATTERN = re.compile(r"(\{[^{}]{0,10000}\"tool_calls\".*?\})", re.DOTALL)
+# 注意：TOOL_CALL_INLINE_PATTERN 已被移除，因为它会导致过度匹配
+# 现在在 remove_tool_json_content 函数中使用基于括号平衡的方法
 FUNCTION_CALL_PATTERN = re.compile(r"调用函数\s*[：:]\s*([\w\-\.]+)\s*(?:参数|arguments)[：:]\s*(\{.*?\})", re.DOTALL)
 
 
@@ -189,27 +190,55 @@ def extract_tool_invocations(text: str) -> Optional[List[Dict[str, Any]]]:
         except (json.JSONDecodeError, AttributeError):
             continue
 
-    # Attempt 2: Extract inline JSON objects
-    inline_match = TOOL_CALL_INLINE_PATTERN.search(scannable_text)
-    if inline_match:
-        try:
-            inline_json = inline_match.group(1)
-            parsed_data = json.loads(inline_json)
-            tool_calls = parsed_data.get("tool_calls")
-            if tool_calls and isinstance(tool_calls, list):
-                # Ensure arguments field is a string
-                for tc in tool_calls:
-                    if "function" in tc:
-                        func = tc["function"]
-                        if "arguments" in func:
-                            if isinstance(func["arguments"], dict):
-                                # Convert dict to JSON string
-                                func["arguments"] = json.dumps(func["arguments"], ensure_ascii=False)
-                            elif not isinstance(func["arguments"], str):
-                                func["arguments"] = json.dumps(func["arguments"], ensure_ascii=False)
-                return tool_calls
-        except (json.JSONDecodeError, AttributeError):
-            pass
+    # Attempt 2: Extract inline JSON objects using bracket balance method
+    # 查找包含 "tool_calls" 的 JSON 对象
+    i = 0
+    while i < len(scannable_text):
+        if scannable_text[i] == '{':
+            # 尝试找到匹配的右括号
+            brace_count = 1
+            j = i + 1
+            in_string = False
+            escape_next = False
+            
+            while j < len(scannable_text) and brace_count > 0:
+                if escape_next:
+                    escape_next = False
+                elif scannable_text[j] == '\\':
+                    escape_next = True
+                elif scannable_text[j] == '"' and not escape_next:
+                    in_string = not in_string
+                elif not in_string:
+                    if scannable_text[j] == '{':
+                        brace_count += 1
+                    elif scannable_text[j] == '}':
+                        brace_count -= 1
+                j += 1
+            
+            if brace_count == 0:
+                # 找到了完整的 JSON 对象
+                json_str = scannable_text[i:j]
+                try:
+                    parsed_data = json.loads(json_str)
+                    tool_calls = parsed_data.get("tool_calls")
+                    if tool_calls and isinstance(tool_calls, list):
+                        # Ensure arguments field is a string
+                        for tc in tool_calls:
+                            if "function" in tc:
+                                func = tc["function"]
+                                if "arguments" in func:
+                                    if isinstance(func["arguments"], dict):
+                                        # Convert dict to JSON string
+                                        func["arguments"] = json.dumps(func["arguments"], ensure_ascii=False)
+                                    elif not isinstance(func["arguments"], str):
+                                        func["arguments"] = json.dumps(func["arguments"], ensure_ascii=False)
+                        return tool_calls
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+            
+            i += 1
+        else:
+            i += 1
 
     # Attempt 3: Parse natural language function calls
     natural_lang_match = FUNCTION_CALL_PATTERN.search(scannable_text)
@@ -233,8 +262,8 @@ def extract_tool_invocations(text: str) -> Optional[List[Dict[str, Any]]]:
 
 
 def remove_tool_json_content(text: str) -> str:
-    """Remove tool JSON content from response text"""
-
+    """Remove tool JSON content from response text - using bracket balance method"""
+    
     def remove_tool_call_block(match: re.Match) -> str:
         json_content = match.group(1)
         try:
@@ -244,9 +273,53 @@ def remove_tool_json_content(text: str) -> str:
         except (json.JSONDecodeError, AttributeError):
             pass
         return match.group(0)
-
-    # Remove fenced tool JSON blocks
+    
+    # Step 1: Remove fenced tool JSON blocks
     cleaned_text = TOOL_CALL_FENCE_PATTERN.sub(remove_tool_call_block, text)
-    # Remove inline tool JSON
-    cleaned_text = TOOL_CALL_INLINE_PATTERN.sub("", cleaned_text)
-    return cleaned_text.strip()
+    
+    # Step 2: Remove inline tool JSON - 使用基于括号平衡的智能方法
+    # 查找所有可能的 JSON 对象并精确删除包含 tool_calls 的对象
+    result = []
+    i = 0
+    while i < len(cleaned_text):
+        if cleaned_text[i] == '{':
+            # 尝试找到匹配的右括号
+            brace_count = 1
+            j = i + 1
+            in_string = False
+            escape_next = False
+            
+            while j < len(cleaned_text) and brace_count > 0:
+                if escape_next:
+                    escape_next = False
+                elif cleaned_text[j] == '\\':
+                    escape_next = True
+                elif cleaned_text[j] == '"' and not escape_next:
+                    in_string = not in_string
+                elif not in_string:
+                    if cleaned_text[j] == '{':
+                        brace_count += 1
+                    elif cleaned_text[j] == '}':
+                        brace_count -= 1
+                j += 1
+            
+            if brace_count == 0:
+                # 找到了完整的 JSON 对象
+                json_str = cleaned_text[i:j]
+                try:
+                    parsed = json.loads(json_str)
+                    if "tool_calls" in parsed:
+                        # 这是一个工具调用，跳过它
+                        i = j
+                        continue
+                except:
+                    pass
+            
+            # 不是工具调用或无法解析，保留这个字符
+            result.append(cleaned_text[i])
+            i += 1
+        else:
+            result.append(cleaned_text[i])
+            i += 1
+    
+    return ''.join(result).strip()
