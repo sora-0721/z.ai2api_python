@@ -223,7 +223,7 @@ A: `AUTH_TOKEN` 为自己自定义的api key，在环境变量中配置，需要
 
 **Q: 如何通过 Claude Code 使用本服务？**
 
-A: 复制 [zai.js 文件](https://gist.githubusercontent.com/musistudio/b35402d6f9c95c64269c7666b8405348/raw/f108d66fa050f308387938f149a2b14a295d29e9/gistfile1.txt) 放在`.claude-code-router\\plugins`目录下，配置 Claude Code Router 指向本服务地址，使用 `AUTH_TOKEN` 进行认证。
+A: 创建 [zai.js](https://gist.githubusercontent.com/musistudio/b35402d6f9c95c64269c7666b8405348/raw/f108d66fa050f308387938f149a2b14a295d29e9/gistfile1.txt) 这个ccr插件放在`./.claude-code-router/plugins`目录下，配置 `./.claude-code-router/config.json` 指向本服务地址，使用 `AUTH_TOKEN` 进行认证。
 
 示例配置：
 ```json
