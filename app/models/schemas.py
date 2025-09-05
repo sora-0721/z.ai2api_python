@@ -8,12 +8,14 @@ from pydantic import BaseModel
 
 class ContentPart(BaseModel):
     """Content part model for OpenAI's new content format"""
+
     type: str
     text: Optional[str] = None
 
 
 class Message(BaseModel):
     """Chat message model"""
+
     role: str
     content: Optional[Union[str, List[ContentPart]]] = None
     reasoning_content: Optional[str] = None
@@ -22,6 +24,7 @@ class Message(BaseModel):
 
 class OpenAIRequest(BaseModel):
     """OpenAI-compatible request model"""
+
     model: str
     messages: List[Message]
     stream: Optional[bool] = False
@@ -33,6 +36,7 @@ class OpenAIRequest(BaseModel):
 
 class ModelItem(BaseModel):
     """Model information item"""
+
     id: str
     name: str
     owned_by: str
@@ -40,6 +44,7 @@ class ModelItem(BaseModel):
 
 class UpstreamRequest(BaseModel):
     """Upstream service request model"""
+
     stream: bool
     model: str
     messages: List[Message]
@@ -52,19 +57,21 @@ class UpstreamRequest(BaseModel):
     model_item: Optional[ModelItem] = None
     tool_servers: Optional[List[str]] = None
     variables: Optional[Dict[str, str]] = None
-    model_config = {'protected_namespaces': ()}
+    model_config = {"protected_namespaces": ()}
 
 
 class Delta(BaseModel):
     """Stream delta model"""
+
     role: Optional[str] = None
-    content: Optional[str] = None
+    content: Optional[str] = "" or None
     reasoning_content: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
 
 
 class Choice(BaseModel):
     """Response choice model"""
+
     index: int
     message: Optional[Message] = None
     delta: Optional[Delta] = None
@@ -73,6 +80,7 @@ class Choice(BaseModel):
 
 class Usage(BaseModel):
     """Token usage statistics"""
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -80,6 +88,7 @@ class Usage(BaseModel):
 
 class OpenAIResponse(BaseModel):
     """OpenAI-compatible response model"""
+
     id: str
     object: str
     created: int
@@ -90,17 +99,20 @@ class OpenAIResponse(BaseModel):
 
 class UpstreamError(BaseModel):
     """Upstream error model"""
+
     detail: str
     code: int
 
 
 class UpstreamDataInner(BaseModel):
     """Inner upstream data model"""
+
     error: Optional[UpstreamError] = None
 
 
 class UpstreamDataData(BaseModel):
     """Upstream data content model"""
+
     delta_content: str = ""
     edit_content: str = ""
     phase: str = ""
@@ -112,6 +124,7 @@ class UpstreamDataData(BaseModel):
 
 class UpstreamData(BaseModel):
     """Upstream data model"""
+
     type: str
     data: UpstreamDataData
     error: Optional[UpstreamError] = None
@@ -119,6 +132,7 @@ class UpstreamData(BaseModel):
 
 class Model(BaseModel):
     """Model information for listing"""
+
     id: str
     object: str = "model"
     created: int
@@ -127,7 +141,6 @@ class Model(BaseModel):
 
 class ModelsResponse(BaseModel):
     """Models list response model"""
+
     object: str = "list"
     data: List[Model]
-
-
