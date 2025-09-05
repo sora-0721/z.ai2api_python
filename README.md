@@ -324,23 +324,6 @@ A: 通过环境变量配置，推荐使用 `.env` 文件。
                            OpenAI Compatible API
 ```
 
-### 核心组件
-
-- **FastAPI** - 高性能 Web 框架，支持异步处理
-- **Pydantic** - 数据验证和序列化，确保 API 兼容性  
-- **Uvicorn** - ASGI 服务器，提供高性能服务
-- **httpx** - 现代 HTTP 客户端，支持异步请求
-- **SSE Parser** - 流式响应处理，优化实时交互
-
-### 架构特点
-
-- **模块化设计** - 清晰的目录结构，易于维护和扩展
-- **标准 OpenAI 协议** - 完全兼容 OpenAI API v1 规范
-- **智能模型路由** - 根据模型特性自动选择最优上游
-- **增强工具调用** - 改进的 Function Call 处理机制
-- **流式处理** - 优化的 SSE 流式响应实现
-- **类型安全** - 基于 Pydantic 的严格类型检查
-
 ### 项目结构
 
 ```
@@ -361,8 +344,6 @@ z.ai2api_python/
 │   │   └── sse_parser.py      # SSE 流式解析器
 │   └── __init__.py
 ├── tests/                     # 单元测试
-│   ├── test_tool_call.py      # 工具调用测试
-│   └── test_function_call.py  # Function Call 测试
 ├── deploy/                    # Docker 部署配置
 ├── main.py                    # FastAPI 应用入口
 ├── requirements.txt           # Python 依赖
