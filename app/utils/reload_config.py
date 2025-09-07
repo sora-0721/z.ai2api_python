@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 """
 热重载配置模块
 定义 Granian 服务器热重载时需要忽略的目录和文件模式

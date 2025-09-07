@@ -1,18 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""
-Main application entry point
-"""
-
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core import openai
 from app.utils.reload_config import RELOAD_CONFIG
+from app.utils.logger import setup_logger
 
 from granian import Granian
+
+
+# Setup logger
+logger = setup_logger(log_dir="logs", debug_mode=settings.DEBUG_LOGGING)
 
 # Create FastAPI app
 app = FastAPI(
@@ -52,7 +53,7 @@ def run_server():
         interface="asgi",
         address="0.0.0.0",
         port=settings.LISTEN_PORT,
-        reload=False,   # 生产环境请关闭热重载
+        reload=False,  # 生产环境请关闭热重载
         **RELOAD_CONFIG,
     ).serve()
 
