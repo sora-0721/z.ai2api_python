@@ -361,6 +361,12 @@ z.ai2api_python/
 └── README.md                  # 项目文档
 ```
 
+## ⭐ Star History
+
+If you like this project, please give it a star ⭐  
+[![Star History Chart](https://www.star-history.com/#ZyphrZero/z.ai2api_python&Date)](https://www.star-history.com/#ZyphrZero/z.ai2api_python&Date)
+
+
 ## 🤝 贡献指南
 
 我们欢迎所有形式的贡献！
