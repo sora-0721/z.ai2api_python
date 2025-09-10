@@ -364,7 +364,8 @@ z.ai2api_python/
 ## ⭐ Star History
 
 If you like this project, please give it a star ⭐  
-[![Star History Chart](https://www.star-history.com/#ZyphrZero/z.ai2api_python&Date)](https://www.star-history.com/#ZyphrZero/z.ai2api_python&Date)
+
+[![Star History Chart](https://api.star-history.com/svg?repos=ZyphrZero/z.ai2api_python&type=Date)](https://star-history.com/#ZyphrZero/z.ai2api_python&Date)
 
 
 ## 🤝 贡献指南
