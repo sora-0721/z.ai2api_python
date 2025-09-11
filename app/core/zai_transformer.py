@@ -165,25 +165,33 @@ class ZAITransformer:
         转换OpenAI请求为z.ai格式
         整合现有功能：模型映射、MCP服务器等
         """
+        logger.info("🔄 开始转换 OpenAI 请求到 Z.AI 格式")
+        
         # 获取认证令牌
         token = await self.get_token()
+        logger.debug(f"  使用令牌: {token[:20] if token else 'None'}...")
 
         # 确定请求的模型特性
         requested_model = request.get("model", settings.PRIMARY_MODEL)
         is_thinking = requested_model == settings.THINKING_MODEL or request.get("reasoning", False)
         is_search = requested_model == settings.SEARCH_MODEL
         is_air = requested_model == settings.AIR_MODEL
+        
+        logger.info(f"  模型分析 - 请求模型: {requested_model}, 思考模式: {is_thinking}, 搜索模式: {is_search}, Air模式: {is_air}")
 
         # 获取上游模型ID（使用模型映射）
         upstream_model_id = self.model_mapping.get(requested_model, "0727-360B-API")
+        logger.debug(f"  模型映射: {requested_model} -> {upstream_model_id}")
 
         # 处理消息列表
+        logger.debug(f"  开始处理 {len(request.get('messages', []))} 条消息")
         messages = []
-        for orig_msg in request.get("messages", []):
+        for idx, orig_msg in enumerate(request.get("messages", [])):
             msg = orig_msg.copy()
 
             # 处理system角色转换
             if msg.get("role") == "system":
+                logger.debug(f"    消息[{idx}]: 转换 system -> user 角色")
                 msg["role"] = "user"
                 content = msg.get("content")
 
@@ -199,13 +207,14 @@ class ZAITransformer:
                 content = msg.get("content")
                 if isinstance(content, list):
                     new_content = []
-                    for part in content:
+                    for part_idx, part in enumerate(content):
                         # 处理图片URL（支持base64和http URL）
                         if (
                             part.get("type") == "image_url"
                             and part.get("image_url", {}).get("url")
                             and isinstance(part["image_url"]["url"], str)
                         ):
+                            logger.debug(f"    消息[{idx}]内容[{part_idx}]: 检测到图片URL")
                             # 直接传递图片内容
                             new_content.append(part)
                         else:
@@ -214,6 +223,7 @@ class ZAITransformer:
 
             # 处理assistant消息中的reasoning_content
             elif msg.get("role") == "assistant" and msg.get("reasoning_content"):
+                logger.debug(f"    消息[{idx}]: 保留reasoning_content")
                 # 如果有reasoning_content，保留它
                 pass
 
@@ -223,9 +233,12 @@ class ZAITransformer:
         mcp_servers = []
         if is_search:
             mcp_servers.append("deep-web-search")
+            logger.info("  启用 MCP 服务器: deep-web-search")
 
         # 构建上游请求体
         chat_id = generate_uuid()
+        logger.info(f"  生成 chat_id: {chat_id}")
+        
         body = {
             "stream": True,  # 总是使用流式
             "model": upstream_model_id,  # 使用映射后的模型ID
@@ -264,11 +277,18 @@ class ZAITransformer:
         # 处理工具支持
         if settings.TOOL_SUPPORT and not is_thinking and request.get("tools"):
             body["tools"] = request["tools"]
+            logger.info(f"  启用工具支持: {len(request['tools'])} 个工具")
+            for tool_idx, tool in enumerate(request["tools"]):
+                tool_name = tool.get("function", {}).get("name", "unknown")
+                logger.debug(f"    工具[{tool_idx}]: {tool_name}")
         else:
             body["tools"] = None
+            if request.get("tools"):
+                logger.debug(f"  工具支持已禁用或在思考模式下，忽略 {len(request.get('tools', []))} 个工具")
 
         # 构建请求配置
         dynamic_headers = get_dynamic_headers(chat_id)
+        logger.debug(f"  生成动态请求头 - User-Agent: {dynamic_headers.get('User-Agent', '')[:80]}...")
 
         config = {
             "url": self.api_url,  # 使用原始URL
@@ -284,6 +304,11 @@ class ZAITransformer:
             },
         }
 
+        logger.info("✅ 请求转换完成")
+        logger.debug(f"  目标URL: {config['url']}")
+        logger.debug(f"  请求头数量: {len(config['headers'])}")
+        logger.debug(f"  消息数: {len(body['messages'])}, 工具数: {len(body.get('tools', [])) if body.get('tools') else 0}")
+        
         return {"body": body, "config": config}
 
     async def transform_response_out(

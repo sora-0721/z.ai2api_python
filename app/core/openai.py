@@ -41,7 +41,13 @@ async def list_models():
 @router.post("/v1/chat/completions")
 async def chat_completions(request: OpenAIRequest, authorization: str = Header(...)):
     """Handle chat completion requests with ZAI transformer"""
-    logger.debug("收到chat completions请求")
+    logger.info(f"📥 收到 OpenAI 请求 - 模型: {request.model}, 流式: {request.stream}")
+    logger.debug(f"请求详情 - 消息数: {len(request.messages)}, 工具数: {len(request.tools) if request.tools else 0}")
+    
+    # 输出消息内容用于调试
+    for idx, msg in enumerate(request.messages):
+        content_preview = str(msg.content)[:100] if msg.content else "None"
+        logger.debug(f"  消息[{idx}] - 角色: {msg.role}, 内容预览: {content_preview}...")
 
     try:
         # Validate API key (skip if SKIP_AUTH_TOKEN is enabled)
@@ -59,17 +65,24 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
         else:
             logger.debug("SKIP_AUTH_TOKEN已启用，跳过API key验证")
 
-        logger.debug(f"请求解析成功 - 模型: {request.model}, 流式: {request.stream}, 消息数: {len(request.messages)}")
-
-        # 使用新的转换器转换请求
+        # 输出原始请求体用于调试
         request_dict = request.model_dump()
+        logger.debug(f"🔄 原始 OpenAI 请求体: {json.dumps(request_dict, ensure_ascii=False, indent=2)}")
+        
+        # 使用新的转换器转换请求
+        logger.info("🔄 开始转换请求格式: OpenAI -> Z.AI")
         transformed = await transformer.transform_request_in(request_dict)
 
+        logger.info(
+            f"✅ 请求转换完成 - 上游模型: {transformed['body']['model']}, "
+            f"chat_id: {transformed['body']['chat_id']}"
+        )
         logger.debug(
-            f"请求转换完成 - 上游模型: {transformed['body']['model']}, "
-            f"enable_thinking: {transformed['body']['features']['enable_thinking']}, "
+            f"  特性配置 - enable_thinking: {transformed['body']['features']['enable_thinking']}, "
+            f"web_search: {transformed['body']['features']['web_search']}, "
             f"mcp_servers: {transformed['body'].get('mcp_servers', [])}"
         )
+        logger.debug(f"🔄 转换后 Z.AI 请求体: {json.dumps(transformed['body'], ensure_ascii=False, indent=2)}")
 
         # 调用上游API
         async def stream_response():
@@ -77,6 +90,9 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
             try:
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     # 发送请求到上游
+                    logger.info(f"🎯 发送请求到 Z.AI: {transformed['config']['url']}")
+                    logger.debug(f"  请求头数量: {len(transformed['config']['headers'])}")
+                    
                     async with client.stream(
                         "POST",
                         transformed["config"]["url"],
@@ -84,11 +100,13 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                         headers=transformed["config"]["headers"],
                     ) as response:
                         if response.status_code != 200:
-                            logger.error(f"上游返回错误: {response.status_code}")
+                            logger.error(f"❌ 上游返回错误: {response.status_code}")
                             error_text = await response.aread()
                             logger.error(f"错误详情: {error_text.decode('utf-8', errors='ignore')}")
                             yield f"data: {json.dumps({'error': 'Upstream error'})}\n\n"
                             return
+                        
+                        logger.info(f"✅ Z.AI 响应成功，开始处理 SSE 流")
 
                         # 初始化工具处理器（如果需要）
                         has_tools = transformed["body"].get("tools") is not None
@@ -97,7 +115,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                             chat_id = transformed["body"]["chat_id"]
                             model = request.model
                             tool_handler = SSEToolHandler(chat_id, model)
-                            logger.debug(f"初始化工具处理器 - chat_id: {chat_id}")
+                            logger.info(f"🔧 初始化工具处理器 - chat_id: {chat_id}, 工具数: {len(transformed['body'].get('tools', []))}")
 
                         # 处理状态
                         has_thinking = False
@@ -105,10 +123,17 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
 
                         # 处理SSE流
                         buffer = ""
+                        line_count = 0
+                        logger.debug("📡 开始接收 SSE 流数据...")
+                        
                         async for line in response.aiter_lines():
+                            line_count += 1
                             if not line:
+                                logger.debug(f"  行[{line_count}]: 空行，跳过")
                                 continue
 
+                            logger.debug(f"  行[{line_count}]: 接收到数据 - {line[:100]}..." if len(line) > 100 else f"  行[{line_count}]: 接收到数据 - {line}")
+                            
                             # 累积到buffer处理完整的数据行
                             buffer += line + "\n"
 
@@ -122,8 +147,11 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                     chunk_str = current_line[5:].strip()
                                     if not chunk_str or chunk_str == "[DONE]":
                                         if chunk_str == "[DONE]":
+                                            logger.debug("🏁 收到结束信号 [DONE]")
                                             yield "data: [DONE]\n\n"
                                         continue
+                                    
+                                    logger.debug(f"  📦 解析数据块: {chunk_str[:200]}..." if len(chunk_str) > 200 else f"  📦 解析数据块: {chunk_str}")
 
                                     try:
                                         chunk = json.loads(chunk_str)
@@ -131,6 +159,11 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                         if chunk.get("type") == "chat:completion":
                                             data = chunk.get("data", {})
                                             phase = data.get("phase")
+                                            
+                                            # 记录每个阶段（只在阶段变化时记录）
+                                            if phase and phase != getattr(stream_response, '_last_phase', None):
+                                                logger.info(f"📈 SSE 阶段变化: {getattr(stream_response, '_last_phase', 'None')} -> {phase}")
+                                                stream_response._last_phase = phase
 
                                             # 处理工具调用
                                             if phase == "tool_call" and tool_handler:
@@ -162,6 +195,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                                         "object": "chat.completion.chunk",
                                                         "system_fingerprint": "fp_zai_001",
                                                     }
+                                                    logger.debug("    ➡️ 发送初始角色")
                                                     yield f"data: {json.dumps(role_chunk)}\n\n"
 
                                                 delta_content = data.get("delta_content", "")
@@ -254,6 +288,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
 
                                                 # 处理增量内容
                                                 elif delta_content:
+                                                    logger.debug(f"    📝 答案内容片段: {delta_content[:100]}...")
                                                     # 如果还没有发送角色
                                                     if not has_thinking:
                                                         role_chunk = {
@@ -291,10 +326,13 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                                         "object": "chat.completion.chunk",
                                                         "system_fingerprint": "fp_zai_001",
                                                     }
-                                                    yield f"data: {json.dumps(content_chunk)}\n\n"
+                                                    output_data = f"data: {json.dumps(content_chunk)}\n\n"
+                                                    logger.debug(f"    ➡️ 输出内容块到客户端: {output_data[:100]}...")
+                                                    yield output_data
 
                                                 # 处理完成
                                                 if data.get("usage"):
+                                                    logger.info(f"📦 完成响应 - 使用统计: {json.dumps(data['usage'])}")
                                                     finish_chunk = {
                                                         "choices": [
                                                             {
@@ -311,7 +349,10 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                                         "object": "chat.completion.chunk",
                                                         "system_fingerprint": "fp_zai_001",
                                                     }
-                                                    yield f"data: {json.dumps(finish_chunk)}\n\n"
+                                                    finish_output = f"data: {json.dumps(finish_chunk)}\n\n"
+                                                    logger.debug(f"    ➡️ 发送完成信号: {finish_output[:100]}...")
+                                                    yield finish_output
+                                                    logger.debug("    ➡️ 发送 [DONE]")
                                                     yield "data: [DONE]\n\n"
 
                                     except json.JSONDecodeError as e:
@@ -321,7 +362,10 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
 
                         # 确保发送结束信号
                         if not tool_handler or not tool_handler.has_tool_call:
+                            logger.debug("📤 发送最终 [DONE] 信号")
                             yield "data: [DONE]\n\n"
+                        
+                        logger.info(f"✅ SSE 流处理完成，共处理 {line_count} 行数据")
 
             except Exception as e:
                 logger.error(f"流处理错误: {e}")
@@ -331,8 +375,24 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
         # 返回流式响应
+        logger.info("🚀 启动 SSE 流式响应")
+        
+        # 创建一个包装的生成器来追踪数据流
+        async def logged_stream():
+            chunk_count = 0
+            try:
+                logger.debug("📤 开始向客户端流式传输数据...")
+                async for chunk in stream_response():
+                    chunk_count += 1
+                    logger.debug(f"  📤 发送块[{chunk_count}]: {chunk[:100]}..." if len(chunk) > 100 else f"  📤 发送块[{chunk_count}]: {chunk}")
+                    yield chunk
+                logger.info(f"✅ 流式传输完成，共发送 {chunk_count} 个数据块")
+            except Exception as e:
+                logger.error(f"❌ 流式传输中断: {e}")
+                raise
+        
         return StreamingResponse(
-            stream_response(),
+            logged_stream(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

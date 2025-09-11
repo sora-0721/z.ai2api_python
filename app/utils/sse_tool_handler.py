@@ -156,6 +156,7 @@ class SSEToolHandler:
 
             # 发送结束信号
             if is_stream:
+                logger.info("    发送工具调用完成信号")
                 yield self._create_tool_finish_chunk()
                 yield "data: [DONE]\n\n"
 
