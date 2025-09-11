@@ -46,7 +46,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
     
     # 输出消息内容用于调试
     for idx, msg in enumerate(request.messages):
-        content_preview = str(msg.content)[:100] if msg.content else "None"
+        content_preview = str(msg.content)[:1000] if msg.content else "None"
         logger.debug(f"  消息[{idx}] - 角色: {msg.role}, 内容预览: {content_preview}...")
 
     try:
@@ -129,10 +129,10 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                         async for line in response.aiter_lines():
                             line_count += 1
                             if not line:
-                                logger.debug(f"  行[{line_count}]: 空行，跳过")
+                                # logger.debug(f"  行[{line_count}]: 空行，跳过")
                                 continue
 
-                            logger.debug(f"  行[{line_count}]: 接收到数据 - {line[:100]}..." if len(line) > 100 else f"  行[{line_count}]: 接收到数据 - {line}")
+                            logger.debug(f"  行[{line_count}]: 接收到数据 - {line[:1000]}..." if len(line) > 1000 else f"  行[{line_count}]: 接收到数据 - {line}")
                             
                             # 累积到buffer处理完整的数据行
                             buffer += line + "\n"
@@ -151,7 +151,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                             yield "data: [DONE]\n\n"
                                         continue
                                     
-                                    logger.debug(f"  📦 解析数据块: {chunk_str[:200]}..." if len(chunk_str) > 200 else f"  📦 解析数据块: {chunk_str}")
+                                    logger.debug(f"  📦 解析数据块: {chunk_str[:1000]}..." if len(chunk_str) > 1000 else f"  📦 解析数据块: {chunk_str}")
 
                                     try:
                                         chunk = json.loads(chunk_str)
@@ -288,7 +288,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
 
                                                 # 处理增量内容
                                                 elif delta_content:
-                                                    logger.debug(f"    📝 答案内容片段: {delta_content[:100]}...")
+                                                    logger.debug(f"    📝 答案内容片段: {delta_content[:1000]}...")
                                                     # 如果还没有发送角色
                                                     if not has_thinking:
                                                         role_chunk = {
@@ -327,36 +327,39 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                                         "system_fingerprint": "fp_zai_001",
                                                     }
                                                     output_data = f"data: {json.dumps(content_chunk)}\n\n"
-                                                    logger.debug(f"    ➡️ 输出内容块到客户端: {output_data[:100]}...")
+                                                    logger.debug(f"    ➡️ 输出内容块到客户端: {output_data[:1000]}...")
                                                     yield output_data
 
                                                 # 处理完成
                                                 if data.get("usage"):
                                                     logger.info(f"📦 完成响应 - 使用统计: {json.dumps(data['usage'])}")
-                                                    finish_chunk = {
-                                                        "choices": [
-                                                            {
-                                                                "delta": {"role": "assistant", "content": ""},
-                                                                "finish_reason": "stop",
-                                                                "index": 0,
-                                                                "logprobs": None,
-                                                            }
-                                                        ],
-                                                        "usage": data["usage"],
-                                                        "created": int(time.time()),
-                                                        "id": transformed["body"]["chat_id"],
-                                                        "model": request.model,
-                                                        "object": "chat.completion.chunk",
-                                                        "system_fingerprint": "fp_zai_001",
-                                                    }
-                                                    finish_output = f"data: {json.dumps(finish_chunk)}\n\n"
-                                                    logger.debug(f"    ➡️ 发送完成信号: {finish_output[:100]}...")
-                                                    yield finish_output
-                                                    logger.debug("    ➡️ 发送 [DONE]")
-                                                    yield "data: [DONE]\n\n"
+                                                    
+                                                    # 只有在非工具调用模式下才发送普通完成信号
+                                                    if not tool_handler or not tool_handler.has_tool_call:
+                                                        finish_chunk = {
+                                                            "choices": [
+                                                                {
+                                                                    "delta": {"role": "assistant", "content": ""},
+                                                                    "finish_reason": "stop",
+                                                                    "index": 0,
+                                                                    "logprobs": None,
+                                                                }
+                                                            ],
+                                                            "usage": data["usage"],
+                                                            "created": int(time.time()),
+                                                            "id": transformed["body"]["chat_id"],
+                                                            "model": request.model,
+                                                            "object": "chat.completion.chunk",
+                                                            "system_fingerprint": "fp_zai_001",
+                                                        }
+                                                        finish_output = f"data: {json.dumps(finish_chunk)}\n\n"
+                                                        logger.debug(f"    ➡️ 发送完成信号: {finish_output[:1000]}...")
+                                                        yield finish_output
+                                                        logger.debug("    ➡️ 发送 [DONE]")
+                                                        yield "data: [DONE]\n\n"
 
                                     except json.JSONDecodeError as e:
-                                        logger.debug(f"JSON解析错误: {e}, 内容: {chunk_str[:100]}")
+                                        logger.debug(f"JSON解析错误: {e}, 内容: {chunk_str[:1000]}")
                                     except Exception as e:
                                         logger.error(f"处理chunk错误: {e}")
 
@@ -384,7 +387,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                 logger.debug("📤 开始向客户端流式传输数据...")
                 async for chunk in stream_response():
                     chunk_count += 1
-                    logger.debug(f"  📤 发送块[{chunk_count}]: {chunk[:100]}..." if len(chunk) > 100 else f"  📤 发送块[{chunk_count}]: {chunk}")
+                    logger.debug(f"  📤 发送块[{chunk_count}]: {chunk[:1000]}..." if len(chunk) > 1000 else f"  📤 发送块[{chunk_count}]: {chunk}")
                     yield chunk
                 logger.info(f"✅ 流式传输完成，共发送 {chunk_count} 个数据块")
             except Exception as e:
