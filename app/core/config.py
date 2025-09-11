@@ -27,10 +27,6 @@ class Settings(BaseSettings):
     LISTEN_PORT: int = int(os.getenv("LISTEN_PORT", "8080"))
     DEBUG_LOGGING: bool = os.getenv("DEBUG_LOGGING", "true").lower() == "true"
 
-    # Feature Configuration
-    THINKING_PROCESSING: str = os.getenv(
-        "THINKING_PROCESSING", "think"
-    )  # strip: 去除<details>标签；think: 转为<span>标签；raw: 保留原样
     ANONYMOUS_MODE: bool = os.getenv("ANONYMOUS_MODE", "true").lower() == "true"
     TOOL_SUPPORT: bool = os.getenv("TOOL_SUPPORT", "true").lower() == "true"
     SCAN_LIMIT: int = int(os.getenv("SCAN_LIMIT", "200000"))

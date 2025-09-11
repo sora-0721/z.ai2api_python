@@ -320,7 +320,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                         logger.error(f"处理chunk错误: {e}")
 
                         # 确保发送结束信号
-                        if not tool_handler or not tool_handler.state.has_tool_call:
+                        if not tool_handler or not tool_handler.has_tool_call:
                             yield "data: [DONE]\n\n"
 
             except Exception as e:
