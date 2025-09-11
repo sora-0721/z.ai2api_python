@@ -77,7 +77,7 @@ def get_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
         "Accept": "application/json, text/event-stream",
         "User-Agent": user_agent,
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "X-FE-Version": "prod-fe-1.0.77",
+        "X-FE-Version": "prod-fe-1.0.79",
         "Origin": "https://chat.z.ai",
     }
 
@@ -131,7 +131,7 @@ class ZAITransformer:
         self.api_url = settings.API_ENDPOINT
         self.auth_url = f"{self.base_url}/api/v1/auths/"
 
-        # 模型映射（保留原有逻辑）
+        # 模型映射
         self.model_mapping = {
             settings.PRIMARY_MODEL: "0727-360B-API",  # GLM-4.5
             settings.THINKING_MODEL: "0727-360B-API",  # GLM-4.5-Thinking
@@ -212,19 +212,20 @@ class ZAITransformer:
                             new_content.append(part)
                     msg["content"] = new_content
 
-            # 处理assistant消息中的reasoning_content（保留原有功能）
+            # 处理assistant消息中的reasoning_content
             elif msg.get("role") == "assistant" and msg.get("reasoning_content"):
                 # 如果有reasoning_content，保留它
                 pass
 
             messages.append(msg)
 
-        # 构建MCP服务器列表（保留原有功能）
+        # 构建MCP服务器列表
         mcp_servers = []
         if is_search:
             mcp_servers.append("deep-web-search")
 
         # 构建上游请求体
+        chat_id = generate_uuid()
         body = {
             "stream": True,  # 总是使用流式
             "model": upstream_model_id,  # 使用映射后的模型ID
@@ -256,7 +257,7 @@ class ZAITransformer:
             },
             "model_item": {},
             "tool_servers": [],  # 保留工具服务器字段
-            "chat_id": generate_uuid(),
+            "chat_id": chat_id,
             "id": generate_uuid(),
         }
 
@@ -266,12 +267,11 @@ class ZAITransformer:
         else:
             body["tools"] = None
 
-        # 构建请求配置（使用动态headers）
-        chat_id = body["chat_id"]
+        # 构建请求配置
         dynamic_headers = get_dynamic_headers(chat_id)
 
         config = {
-            "url": self.api_url,
+            "url": self.api_url,  # 使用原始URL
             "headers": {
                 **dynamic_headers,  # 使用动态生成的headers
                 "Authorization": f"Bearer {token}",
@@ -357,138 +357,141 @@ class ZAITransformer:
                             if not has_tool_call:
                                 has_tool_call = True
 
-                            edit_content = data.get("edit_content", "")
-                            if edit_content:
-                                blocks = edit_content.split("<glm_block >")
+                                if is_stream:
+                                    # 发送初始角色
+                                    role_chunk = {
+                                        "choices": [
+                                            {
+                                                "delta": {"role": "assistant"},
+                                                "finish_reason": None,
+                                                "index": 0,
+                                            }
+                                        ],
+                                        "created": int(time.time()),
+                                        "id": current_id,
+                                        "model": current_model,
+                                        "object": "chat.completion.chunk",
+                                    }
+                                    yield f"data: {json.dumps(role_chunk)}\n\n"
 
-                                for index, block in enumerate(blocks):
-                                    if "</glm_block>" not in block:
-                                        continue
+                            # 处理工具调用块
+                            tool_call_id = data.get("tool_call", {}).get("id", "")
+                            tool_name = data.get("tool_call", {}).get("name", "")
+                            delta_args = data.get("delta_tool_call", {}).get("arguments", "")
 
-                                    if index == 0:
-                                        # 第一个块：截取到 "result" 之前
-                                        if '"result' in edit_content:
-                                            tool_args += edit_content[: edit_content.index('"result') - 3]
-                                    else:
-                                        # 后续块：处理完整的工具调用
-                                        if tool_id:
-                                            # 完成前一个工具调用
-                                            try:
-                                                tool_args += '"'
-                                                params = json.loads(tool_args)
+                            if tool_call_id and tool_call_id != tool_id:
+                                # 新工具调用
+                                if tool_id and is_stream:
+                                    # 关闭前一个工具调用
+                                    close_chunk = {
+                                        "choices": [
+                                            {
+                                                "delta": {
+                                                    "tool_calls": [
+                                                        {"index": content_index, "function": {"arguments": ""}}
+                                                    ]
+                                                },
+                                                "finish_reason": None,
+                                                "index": 0,
+                                            }
+                                        ],
+                                        "created": int(time.time()),
+                                        "id": current_id,
+                                        "model": current_model,
+                                        "object": "chat.completion.chunk",
+                                    }
+                                    yield f"data: {json.dumps(close_chunk)}\n\n"
+                                    content_index += 1
 
-                                                if is_stream:
-                                                    # 发送工具参数
-                                                    yield self._create_tool_chunk(
-                                                        tool_id, None, params, content_index, current_id, current_model
-                                                    )
-                                                else:
-                                                    # 更新结果对象
-                                                    if "tool_calls" not in result["choices"][0]["message"]:
-                                                        result["choices"][0]["message"]["tool_calls"] = []
-                                                    result["choices"][0]["message"]["tool_calls"][-1]["function"][
-                                                        "arguments"
-                                                    ] = json.dumps(params)
-                                            except Exception as e:
-                                                logger.debug(f"解析工具参数错误: {e}")
-                                            finally:
-                                                tool_args = ""
-                                                tool_id = ""
+                                tool_id = tool_call_id
+                                tool_args = ""
 
-                                        # 开始新的工具调用
-                                        content_index += 1
-                                        block_content = block[: block.index("</glm_block>")]
+                                if is_stream:
+                                    # 发送新工具调用
+                                    new_tool_chunk = {
+                                        "choices": [
+                                            {
+                                                "delta": {
+                                                    "tool_calls": [
+                                                        {
+                                                            "index": content_index,
+                                                            "id": tool_call_id,
+                                                            "type": "function",
+                                                            "function": {"name": tool_name, "arguments": ""},
+                                                        }
+                                                    ]
+                                                },
+                                                "finish_reason": None,
+                                                "index": 0,
+                                            }
+                                        ],
+                                        "created": int(time.time()),
+                                        "id": current_id,
+                                        "model": current_model,
+                                        "object": "chat.completion.chunk",
+                                    }
+                                    yield f"data: {json.dumps(new_tool_chunk)}\n\n"
 
-                                        try:
-                                            tool_data = json.loads(block_content)
-                                            metadata = tool_data.get("data", {}).get("metadata", {})
-                                            tool_id = metadata.get("id")
-                                            tool_name = metadata.get("name")
-
-                                            # 开始累积参数
-                                            args_str = json.dumps(metadata.get("arguments", {}))
-                                            tool_args += args_str[:-1]  # 去掉结束的 }
-
-                                            if is_stream:
-                                                # 发送工具开始
-                                                yield self._create_tool_chunk(
-                                                    tool_id, tool_name, "", content_index, current_id, current_model
-                                                )
-                                            else:
-                                                # 添加到结果
-                                                if "tool_calls" not in result["choices"][0]["message"]:
-                                                    result["choices"][0]["message"]["tool_calls"] = []
-                                                result["choices"][0]["message"]["tool_calls"].append(
-                                                    {
-                                                        "id": tool_id,
-                                                        "type": "function",
-                                                        "function": {"name": tool_name, "arguments": ""},
-                                                    }
-                                                )
-                                        except Exception as e:
-                                            logger.debug(f"解析工具块错误: {e}")
-
-                        elif phase == "other":
-                            # 处理其他阶段
-                            if has_tool_call and data.get("usage"):
-                                tool_call_usage = data["usage"]
-
-                            edit_content = data.get("edit_content", "")
-                            if has_tool_call and edit_content and edit_content.startswith("null,"):
-                                # 工具调用结束
-                                tool_args += '"'
-                                has_tool_call = False
-
-                                try:
-                                    params = json.loads(tool_args)
-
-                                    if is_stream:
-                                        # 发送最终参数和结束信号
-                                        yield self._create_tool_chunk(
-                                            tool_id, None, params, 0, current_id, current_model
-                                        )
-
-                                        # 发送完成信号
-                                        finish_chunk = {
-                                            "choices": [
-                                                {
-                                                    "delta": {"role": "assistant", "content": None, "tool_calls": []},
-                                                    "finish_reason": "tool_calls",
-                                                    "index": 0,
-                                                    "logprobs": None,
-                                                }
-                                            ],
-                                            "created": int(time.time()),
-                                            "id": current_id,
-                                            "usage": tool_call_usage,
-                                            "model": current_model,
-                                            "object": "chat.completion.chunk",
-                                            "system_fingerprint": "fp_zai_001",
-                                        }
-                                        yield f"data: {json.dumps(finish_chunk)}\n\n"
-                                        yield "data: [DONE]\n\n"
-                                    else:
-                                        # 更新结果
-                                        result["choices"][0]["message"]["tool_calls"][-1]["function"]["arguments"] = (
-                                            json.dumps(params)
-                                        )
-                                        result["usage"] = tool_call_usage
-                                        result["choices"][0]["finish_reason"] = "tool_calls"
-
-                                    return  # 结束处理
-                                except Exception as e:
-                                    logger.debug(f"处理工具结束错误: {e}")
+                            # 处理参数增量
+                            if delta_args:
+                                tool_args += delta_args
+                                if is_stream:
+                                    args_chunk = {
+                                        "choices": [
+                                            {
+                                                "delta": {
+                                                    "tool_calls": [
+                                                        {
+                                                            "index": content_index,
+                                                            "function": {"arguments": delta_args},
+                                                        }
+                                                    ]
+                                                },
+                                                "finish_reason": None,
+                                                "index": 0,
+                                            }
+                                        ],
+                                        "created": int(time.time()),
+                                        "id": current_id,
+                                        "model": current_model,
+                                        "object": "chat.completion.chunk",
+                                    }
+                                    yield f"data: {json.dumps(args_chunk)}\n\n"
 
                         elif phase == "thinking":
-                            # 处理思考阶段
+                            # 处理思考内容
                             if not has_thinking:
                                 has_thinking = True
+                                # 初始化thinking字段
+                                if not is_stream:
+                                    result["choices"][0]["message"]["thinking"] = {"content": ""}
+
+                                if is_stream:
+                                    # 发送初始角色
+                                    role_chunk = {
+                                        "choices": [
+                                            {
+                                                "delta": {"role": "assistant"},
+                                                "finish_reason": None,
+                                                "index": 0,
+                                            }
+                                        ],
+                                        "created": int(time.time()),
+                                        "id": current_id,
+                                        "model": current_model,
+                                        "object": "chat.completion.chunk",
+                                    }
+                                    yield f"data: {json.dumps(role_chunk)}\n\n"
 
                             delta_content = data.get("delta_content", "")
                             if delta_content:
                                 # 处理思考内容格式
                                 if delta_content.startswith("<details"):
-                                    content = delta_content.split("</summary>\n>")[-1].strip()
+                                    content = (
+                                        delta_content.split("</summary>\n>")[-1].strip()
+                                        if "</summary>\n>" in delta_content
+                                        else delta_content
+                                    )
                                 else:
                                     content = delta_content
 
@@ -496,26 +499,22 @@ class ZAITransformer:
                                     thinking_chunk = {
                                         "choices": [
                                             {
-                                                "delta": {"role": "assistant", "thinking": {"content": content}},
+                                                "delta": {"thinking": {"content": content}},
                                                 "finish_reason": None,
                                                 "index": 0,
-                                                "logprobs": None,
                                             }
                                         ],
                                         "created": int(time.time()),
                                         "id": current_id,
                                         "model": current_model,
                                         "object": "chat.completion.chunk",
-                                        "system_fingerprint": "fp_zai_001",
                                     }
                                     yield f"data: {json.dumps(thinking_chunk)}\n\n"
                                 else:
-                                    if "thinking" not in result["choices"][0]["message"]:
-                                        result["choices"][0]["message"]["thinking"] = {"content": ""}
                                     result["choices"][0]["message"]["thinking"]["content"] += content
 
-                        elif phase == "answer" and not has_tool_call:
-                            # 处理答案阶段
+                        elif phase == "answer":
+                            # 处理答案内容
                             edit_content = data.get("edit_content", "")
                             delta_content = data.get("delta_content", "")
 
@@ -535,14 +534,12 @@ class ZAITransformer:
                                                     },
                                                     "finish_reason": None,
                                                     "index": 0,
-                                                    "logprobs": None,
                                                 }
                                             ],
                                             "created": int(time.time()),
                                             "id": current_id,
                                             "model": current_model,
                                             "object": "chat.completion.chunk",
-                                            "system_fingerprint": "fp_zai_001",
                                         }
                                         yield f"data: {json.dumps(sig_chunk)}\n\n"
                                         content_index += 1
@@ -550,99 +547,122 @@ class ZAITransformer:
                                         result["choices"][0]["message"]["thinking"]["signature"] = signature
 
                                 # 提取答案内容
-                                content = edit_content.split("</details>\n")[-1]
-                                if content:
+                                content_after = edit_content.split("</details>\n")[-1]
+                                if content_after:
                                     if is_stream:
-                                        content_chunk = self._create_content_chunk(content, current_id, current_model)
+                                        content_chunk = {
+                                            "choices": [
+                                                {
+                                                    "delta": {"role": "assistant", "content": content_after},
+                                                    "finish_reason": None,
+                                                    "index": 0,
+                                                }
+                                            ],
+                                            "created": int(time.time()),
+                                            "id": current_id,
+                                            "model": current_model,
+                                            "object": "chat.completion.chunk",
+                                        }
                                         yield f"data: {json.dumps(content_chunk)}\n\n"
                                     else:
-                                        result["choices"][0]["message"]["content"] += content
+                                        result["choices"][0]["message"]["content"] += content_after
 
                             # 处理增量内容
-                            if delta_content:
+                            elif delta_content:
                                 if is_stream:
-                                    content_chunk = self._create_content_chunk(delta_content, current_id, current_model)
+                                    # 如果还没有发送角色
+                                    if not has_thinking and not has_tool_call:
+                                        role_chunk = {
+                                            "choices": [
+                                                {
+                                                    "delta": {"role": "assistant"},
+                                                    "finish_reason": None,
+                                                    "index": 0,
+                                                }
+                                            ],
+                                            "created": int(time.time()),
+                                            "id": current_id,
+                                            "model": current_model,
+                                            "object": "chat.completion.chunk",
+                                        }
+                                        yield f"data: {json.dumps(role_chunk)}\n\n"
+
+                                    content_chunk = {
+                                        "choices": [
+                                            {
+                                                "delta": {"role": "assistant", "content": delta_content},
+                                                "finish_reason": None,
+                                                "index": 0,
+                                            }
+                                        ],
+                                        "created": int(time.time()),
+                                        "id": current_id,
+                                        "model": current_model,
+                                        "object": "chat.completion.chunk",
+                                    }
                                     yield f"data: {json.dumps(content_chunk)}\n\n"
                                 else:
                                     result["choices"][0]["message"]["content"] += delta_content
 
                             # 处理完成
-                            if data.get("usage") and not has_tool_call:
+                            if data.get("usage"):
+                                usage = data["usage"]
                                 if is_stream:
-                                    # 发送完成信号
                                     finish_chunk = {
                                         "choices": [
                                             {
                                                 "delta": {"role": "assistant", "content": ""},
                                                 "finish_reason": "stop",
                                                 "index": 0,
-                                                "logprobs": None,
                                             }
                                         ],
-                                        "usage": data["usage"],
+                                        "usage": usage,
                                         "created": int(time.time()),
                                         "id": current_id,
                                         "model": current_model,
                                         "object": "chat.completion.chunk",
-                                        "system_fingerprint": "fp_zai_001",
                                     }
                                     yield f"data: {json.dumps(finish_chunk)}\n\n"
                                     yield "data: [DONE]\n\n"
                                 else:
+                                    result["id"] = current_id
+                                    result["model"] = current_model
+                                    result["usage"] = usage
                                     result["choices"][0]["finish_reason"] = "stop"
-                                    result["usage"] = data["usage"]
+
+                        elif phase == "other":
+                            # 处理其他阶段（可能包含usage信息）
+                            if data.get("usage"):
+                                tool_call_usage = data["usage"]
+                                if has_tool_call and is_stream:
+                                    # 关闭最后一个工具调用并发送完成
+                                    if tool_id:
+                                        close_chunk = {
+                                            "choices": [
+                                                {
+                                                    "delta": {
+                                                        "tool_calls": [
+                                                            {"index": content_index, "function": {"arguments": ""}}
+                                                        ]
+                                                    },
+                                                    "finish_reason": "tool_calls",
+                                                    "index": 0,
+                                                }
+                                            ],
+                                            "usage": tool_call_usage,
+                                            "created": int(time.time()),
+                                            "id": current_id,
+                                            "model": current_model,
+                                            "object": "chat.completion.chunk",
+                                        }
+                                        yield f"data: {json.dumps(close_chunk)}\n\n"
+                                        yield "data: [DONE]\n\n"
 
                 except json.JSONDecodeError as e:
-                    logger.error(f"JSON解析错误: {e}, 内容: {chunk_str[:100]}")
+                    logger.debug(f"JSON解析错误: {e}, 内容: {chunk_str[:100]}")
                 except Exception as e:
-                    logger.error(f"处理响应块错误: {e}")
+                    logger.error(f"处理chunk错误: {e}")
 
-        # 如果是非流式，返回最终结果
+        # 非流式模式返回完整结果
         if not is_stream:
             yield json.dumps(result)
-
-    def _create_content_chunk(self, content: str, chat_id: str, model: str) -> dict:
-        """创建内容块（辅助函数）"""
-        return {
-            "choices": [
-                {
-                    "delta": {"role": "assistant", "content": content},
-                    "finish_reason": None,
-                    "index": 0,
-                    "logprobs": None,
-                }
-            ],
-            "created": int(time.time()),
-            "id": chat_id,
-            "model": model,
-            "object": "chat.completion.chunk",
-            "system_fingerprint": "fp_zai_001",
-        }
-
-    def _create_tool_chunk(
-        self, tool_id: str, tool_name: Optional[str], arguments: Any, index: int, chat_id: str, model: str
-    ) -> str:
-        """创建工具调用块（辅助函数）"""
-        tool_delta = {
-            "id": tool_id,
-            "type": "function",
-            "function": {"name": tool_name, "arguments": json.dumps(arguments) if arguments else ""},
-        }
-
-        chunk = {
-            "choices": [
-                {
-                    "delta": {"role": "assistant", "content": None, "tool_calls": [tool_delta]},
-                    "finish_reason": None,
-                    "index": index,
-                    "logprobs": None,
-                }
-            ],
-            "created": int(time.time()),
-            "id": chat_id,
-            "model": model,
-            "object": "chat.completion.chunk",
-            "system_fingerprint": "fp_zai_001",
-        }
-
-        return f"data: {json.dumps(chunk)}\n\n"
