@@ -16,11 +16,7 @@ from granian import Granian
 logger = setup_logger(log_dir="logs", debug_mode=settings.DEBUG_LOGGING)
 
 # Create FastAPI app
-app = FastAPI(
-    title="OpenAI Compatible API Server",
-    description="An OpenAI-compatible API server for Z.AI chat service",
-    version="1.0.0",
-)
+app = FastAPI()
 
 # Add CORS middleware
 app.add_middleware(

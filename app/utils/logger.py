@@ -26,9 +26,6 @@ def setup_logger(log_dir, log_retention_days=7, log_rotation="1 day", debug_mode
 
         log_level = "DEBUG" if debug_mode else "INFO"
 
-        log_path = Path(log_dir)
-        log_path.mkdir(parents=True, exist_ok=True)
-
         console_format = (
             "<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
             if not debug_mode
@@ -38,20 +35,24 @@ def setup_logger(log_dir, log_retention_days=7, log_rotation="1 day", debug_mode
 
         logger.add(sys.stderr, level=log_level, format=console_format, colorize=True)
 
-        log_file = log_path / "{time:YYYY-MM-DD}.log"
-        file_format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} | {message}"
+        if debug_mode:
+            log_path = Path(log_dir)
+            log_path.mkdir(parents=True, exist_ok=True)
 
-        logger.add(
-            str(log_file),
-            level=log_level,
-            format=file_format,
-            rotation=log_rotation,
-            retention=f"{log_retention_days} days",
-            encoding="utf-8",
-            compression="zip",
-            enqueue=True,
-            catch=True,
-        )
+            log_file = log_path / "{time:YYYY-MM-DD}.log"
+            file_format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} | {message}"
+
+            logger.add(
+                str(log_file),
+                level=log_level,
+                format=file_format,
+                rotation=log_rotation,
+                retention=f"{log_retention_days} days",
+                encoding="utf-8",
+                compression="zip",
+                enqueue=True,
+                catch=True,
+            )
 
         app_logger = logger
 
