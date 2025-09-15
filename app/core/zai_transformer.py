@@ -14,6 +14,7 @@ from fake_useragent import UserAgent
 
 from app.core.config import settings
 from app.utils.logger import get_logger
+from app.utils.token_pool import get_token_pool, initialize_token_pool
 
 logger = get_logger()
 
@@ -116,9 +117,17 @@ def get_auth_token_sync() -> str:
         except Exception as e:
             logger.warning(f"获取访客令牌失败: {e}")
 
-    # 使用备份令牌
-    logger.debug("使用备份令牌")
-    return settings.BACKUP_TOKEN
+    # 使用token池获取备份令牌
+    token_pool = get_token_pool()
+    if token_pool:
+        token = token_pool.get_next_token()
+        if token:
+            logger.debug(f"从token池获取令牌: {token[:20]}...")
+            return token
+
+    # 没有可用的token
+    logger.warning("⚠️ 没有可用的备份token")
+    return ""
 
 
 class ZAITransformer:
@@ -156,9 +165,29 @@ class ZAITransformer:
             except Exception as e:
                 logger.warning(f"异步获取访客令牌失败: {e}")
 
-        # 使用备份令牌
-        logger.debug("使用备份令牌")
-        return settings.BACKUP_TOKEN
+        # 使用token池获取备份令牌
+        token_pool = get_token_pool()
+        if token_pool:
+            token = token_pool.get_next_token()
+            if token:
+                logger.debug(f"从token池获取令牌: {token[:20]}...")
+                return token
+
+        # 没有可用的token
+        logger.warning("⚠️ 没有可用的备份token")
+        return ""
+
+    def mark_token_success(self, token: str):
+        """标记token使用成功"""
+        token_pool = get_token_pool()
+        if token_pool:
+            token_pool.mark_token_success(token)
+
+    def mark_token_failure(self, token: str, error: Exception = None):
+        """标记token使用失败"""
+        token_pool = get_token_pool()
+        if token_pool:
+            token_pool.mark_token_failure(token, error)
 
     async def transform_request_in(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -170,6 +199,11 @@ class ZAITransformer:
         # 获取认证令牌
         token = await self.get_token()
         logger.debug(f"  使用令牌: {token[:20] if token else 'None'}...")
+
+        # 检查token是否有效
+        if not token:
+            logger.error("❌ 无法获取有效的认证令牌")
+            raise Exception("无法获取有效的认证令牌，请检查匿名模式配置或token池配置")
 
         # 确定请求的模型特性
         requested_model = request.get("model", settings.PRIMARY_MODEL)
@@ -308,8 +342,8 @@ class ZAITransformer:
         logger.debug(f"  目标URL: {config['url']}")
         logger.debug(f"  请求头数量: {len(config['headers'])}")
         logger.debug(f"  消息数: {len(body['messages'])}, 工具数: {len(body.get('tools', [])) if body.get('tools') else 0}")
-        
-        return {"body": body, "config": config}
+
+        return {"body": body, "config": config, "token": token}
 
     async def transform_response_out(
         self, response_stream: Generator, context: Dict[str, Any]

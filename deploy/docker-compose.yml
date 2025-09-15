@@ -15,8 +15,6 @@ services:
       - SKIP_AUTH_TOKEN=false
       # Server Configurations
       - DEBUG_LOGGING=true
-      # Feature Configuration
-      - THINKING_PROCESSING=think
       - ANONYMOUS_MODE=true
       - TOOL_SUPPORT=true
       - SCAN_LIMIT=200000

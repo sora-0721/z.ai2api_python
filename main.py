@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from fastapi import FastAPI, Request, Response
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core import openai
 from app.utils.reload_config import RELOAD_CONFIG
 from app.utils.logger import setup_logger
+from app.utils.token_pool import initialize_token_pool
 
 from granian import Granian
 
@@ -15,8 +17,24 @@ from granian import Granian
 # Setup logger
 logger = setup_logger(log_dir="logs", debug_mode=settings.DEBUG_LOGGING)
 
-# Create FastAPI app
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    token_list = settings.auth_token_list
+    if token_list:
+        token_pool = initialize_token_pool(
+            tokens=token_list,
+            failure_threshold=settings.TOKEN_FAILURE_THRESHOLD,
+            recovery_timeout=settings.TOKEN_RECOVERY_TIMEOUT
+        )
+
+    yield
+
+    logger.info("🔄 应用正在关闭...")
+
+
+# Create FastAPI app with lifespan
+app = FastAPI(lifespan=lifespan)
 
 # Add CORS middleware
 app.add_middleware(

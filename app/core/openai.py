@@ -15,6 +15,7 @@ from app.models.schemas import OpenAIRequest, Message, ModelsResponse, Model
 from app.utils.logger import get_logger
 from app.core.zai_transformer import ZAITransformer, generate_uuid
 from app.utils.sse_tool_handler import SSEToolHandler
+from app.utils.token_pool import get_token_pool
 
 logger = get_logger()
 
@@ -90,6 +91,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
             """流式响应生成器（包含重试机制）"""
             retry_count = 0
             last_error = None
+            current_token = transformed.get("token", "")  # 获取当前使用的token
 
             while retry_count <= settings.MAX_RETRIES:
                 try:
@@ -102,12 +104,19 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                         )
                         await asyncio.sleep(delay)
 
-                        # 在匿名模式下，重新获取令牌
-                        if settings.ANONYMOUS_MODE:
-                            logger.info("🔑 重新获取访客令牌用于重试...")
-                            new_token = await transformer.get_token()
-                            transformed["config"]["headers"]["Authorization"] = f"Bearer {new_token}"
-                            logger.debug(f"  新令牌: {new_token[:20] if new_token else 'None'}...")
+                        # 标记前一个token失败（如果不是匿名模式）
+                        if current_token and not settings.ANONYMOUS_MODE:
+                            transformer.mark_token_failure(current_token, Exception(f"Retry {retry_count}: {last_error}"))
+
+                        # 重新获取令牌
+                        logger.info("🔑 重新获取令牌用于重试...")
+                        new_token = await transformer.get_token()
+                        if not new_token:
+                            logger.error("❌ 重试时无法获取有效的认证令牌")
+                            raise Exception("重试时无法获取有效的认证令牌")
+                        transformed["config"]["headers"]["Authorization"] = f"Bearer {new_token}"
+                        current_token = new_token
+                        logger.debug(f"  新令牌: {new_token[:20] if new_token else 'None'}...")
 
                     async with httpx.AsyncClient(timeout=60.0) as client:
                         # 发送请求到上游
@@ -172,6 +181,10 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                             logger.info(f"✅ Z.AI 响应成功，开始处理 SSE 流")
                             if retry_count > 0:
                                 logger.info(f"✨ 第 {retry_count} 次重试成功")
+
+                            # 标记token使用成功（如果不是匿名模式）
+                            if current_token and not settings.ANONYMOUS_MODE:
+                                transformer.mark_token_success(current_token)
 
                             # 初始化工具处理器（如果需要）
                             has_tools = transformed["body"].get("tools") is not None
@@ -443,6 +456,10 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                     import traceback
                     logger.error(traceback.format_exc())
 
+                    # 标记token失败（如果不是匿名模式）
+                    if current_token and not settings.ANONYMOUS_MODE:
+                        transformer.mark_token_failure(current_token, e)
+
                     # 检查是否还可以重试
                     retry_count += 1
                     last_error = str(e)
@@ -494,3 +511,113 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
 
         logger.error(f"错误堆栈: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.get("/v1/token-pool/status")
+async def get_token_pool_status():
+    """获取token池状态信息"""
+    try:
+        token_pool = get_token_pool()
+        if not token_pool:
+            return {
+                "status": "disabled",
+                "message": "Token池未初始化，当前仅使用匿名模式",
+                "anonymous_mode": settings.ANONYMOUS_MODE,
+                "auth_tokens_file": settings.AUTH_TOKENS_FILE,
+                "auth_tokens_configured": len(settings.auth_token_list) > 0
+            }
+
+        pool_status = token_pool.get_pool_status()
+        return {
+            "status": "active",
+            "pool_info": pool_status,
+            "config": {
+                "anonymous_mode": settings.ANONYMOUS_MODE,
+                "failure_threshold": settings.TOKEN_FAILURE_THRESHOLD,
+                "recovery_timeout": settings.TOKEN_RECOVERY_TIMEOUT,
+                "health_check_interval": settings.TOKEN_HEALTH_CHECK_INTERVAL
+            }
+        }
+    except Exception as e:
+        logger.error(f"获取token池状态失败: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get token pool status: {str(e)}")
+
+
+@router.post("/v1/token-pool/health-check")
+async def trigger_health_check():
+    """手动触发token池健康检查"""
+    try:
+        token_pool = get_token_pool()
+        if not token_pool:
+            raise HTTPException(status_code=404, detail="Token池未初始化")
+
+        # 记录开始时间
+        import time
+        start_time = time.time()
+
+        logger.info("🔍 API触发Token池健康检查...")
+        await token_pool.health_check_all()
+
+        # 计算耗时
+        duration = time.time() - start_time
+
+        pool_status = token_pool.get_pool_status()
+
+        # 统计健康检查结果 - 基于实际的健康状态
+        total_tokens = pool_status['total_tokens']
+        healthy_tokens = sum(1 for token_info in pool_status['tokens'] if token_info['is_healthy'])
+        unhealthy_tokens = total_tokens - healthy_tokens
+
+        # 构建响应
+        response = {
+            "status": "completed",
+            "message": f"健康检查已完成，耗时 {duration:.2f} 秒",
+            "summary": {
+                "total_tokens": total_tokens,
+                "healthy_tokens": healthy_tokens,
+                "unhealthy_tokens": unhealthy_tokens,
+                "health_rate": f"{(healthy_tokens/total_tokens*100):.1f}%" if total_tokens > 0 else "0%",
+                "duration_seconds": round(duration, 2)
+            },
+            "pool_info": pool_status
+        }
+
+        # 添加建议
+        if unhealthy_tokens > 0:
+            response["recommendations"] = []
+            if unhealthy_tokens == total_tokens:
+                response["recommendations"].append("所有token都不健康，请检查token配置和网络连接")
+            else:
+                response["recommendations"].append(f"有 {unhealthy_tokens} 个token不健康，建议检查这些token的有效性")
+
+        logger.info(f"✅ API健康检查完成: {healthy_tokens}/{total_tokens} 个token健康")
+        return response
+    except Exception as e:
+        logger.error(f"健康检查失败: {e}")
+        raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
+
+
+@router.post("/v1/token-pool/update")
+async def update_token_pool(tokens: List[str]):
+    """动态更新token池"""
+    try:
+        from app.utils.token_pool import update_token_pool
+
+        # 过滤空token
+        valid_tokens = [token.strip() for token in tokens if token.strip()]
+        if not valid_tokens:
+            raise HTTPException(status_code=400, detail="至少需要提供一个有效的token")
+
+        update_token_pool(valid_tokens)
+
+        token_pool = get_token_pool()
+        pool_status = token_pool.get_pool_status() if token_pool else None
+
+        return {
+            "status": "updated",
+            "message": f"Token池已更新，共 {len(valid_tokens)} 个token",
+            "pool_info": pool_status
+        }
+    except Exception as e:
+        logger.error(f"更新token池失败: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update token pool: {str(e)}")

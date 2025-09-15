@@ -1,0 +1,21 @@
+# 认证Token配置文件
+#
+# 说明：
+# 1. 支持两种格式：每行一个token 或 逗号分隔的token
+# 2. 只包含认证用户token (role: "user")，不要添加匿名用户token (role: "guest")
+# 3. 系统会自动去重和验证token有效性
+# 4. 修改此文件后无需重启服务，系统会自动重新加载
+# 5. 自动跳过空格、换行符和空token
+#
+# 格式1：每行一个token
+# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItMTIzIn0.signature1
+# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNDU2In0.signature2
+# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNzg5In0.signature3
+#
+# 格式2：逗号分隔（推荐，更紧凑）
+# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItMTIzIn0.signature1,
+# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNDU2In0.signature2,
+# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNzg5In0.signature3
+
+# 请在下方添加您的认证用户token（使用任一格式）：
+
