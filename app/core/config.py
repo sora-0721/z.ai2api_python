@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     SCAN_LIMIT: int = int(os.getenv("SCAN_LIMIT", "200000"))
     SKIP_AUTH_TOKEN: bool = os.getenv("SKIP_AUTH_TOKEN", "false").lower() == "true"
 
+    # Retry Configuration
+    MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "5"))
+    RETRY_DELAY: float = float(os.getenv("RETRY_DELAY", "1.0"))  # 初始重试延迟（秒）
+    RETRY_BACKOFF: float = float(os.getenv("RETRY_BACKOFF", "2.0"))  # 退避系数
+
     # Browser Headers
     CLIENT_HEADERS: Dict[str, str] = {
         "Content-Type": "application/json",
