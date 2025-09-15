@@ -28,7 +28,6 @@ class SSEToolHandler:
         self.content_index = 0
         self.has_thinking = False
 
-        # 原生内容重建机制 - 基于 Z.AI 的 edit_index 机制
         self.content_buffer = bytearray()  # 使用字节数组提高性能
         self.last_edit_index = 0  # 上次编辑的位置
 
@@ -39,7 +38,7 @@ class SSEToolHandler:
 
     def process_tool_call_phase(self, data: Dict[str, Any], is_stream: bool = True) -> Generator[str, None, None]:
         """
-        处理tool_call阶段 - 基于原生edit_index机制处理工具调用
+        处理tool_call阶段
         """
         if not self.has_tool_call:
             self.has_tool_call = True
@@ -53,7 +52,7 @@ class SSEToolHandler:
 
         # logger.debug(f"📦 接收内容片段 [index={edit_index}]: {edit_content[:1000]}...")
 
-        # 使用原生的edit_index机制更新内容缓冲区
+        # 更新内容缓冲区
         self._apply_edit_to_buffer(edit_index, edit_content)
 
         # 尝试解析和处理工具调用
@@ -61,8 +60,7 @@ class SSEToolHandler:
 
     def _apply_edit_to_buffer(self, edit_index: int, edit_content: str):
         """
-        基于edit_index原生地更新内容缓冲区
-        这是Z.AI的核心机制：在指定位置替换/插入内容
+        在指定位置替换/插入内容更新内容缓冲区
         """
         edit_bytes = edit_content.encode('utf-8')
         required_length = edit_index + len(edit_bytes)
@@ -97,7 +95,6 @@ class SSEToolHandler:
     def _extract_and_process_tools(self, content_str: str, is_stream: bool) -> Generator[str, None, None]:
         """
         从内容字符串中提取和处理工具调用
-        使用更原生的方式解析 glm_block
         """
         # 查找所有 glm_block，包括不完整的
         pattern = r'<glm_block\s*>(.*?)(?:</glm_block>|$)'
@@ -162,7 +159,7 @@ class SSEToolHandler:
 
     def _handle_tool_update(self, tool_id: str, tool_name: str, arguments_raw: str, is_stream: bool) -> Generator[str, None, None]:
         """
-        处理工具的创建或更新
+        处理工具的创建或更新 - 更可靠的参数完整性检查
         """
         # 解析参数
         try:
@@ -173,36 +170,157 @@ class SSEToolHandler:
             else:
                 arguments = arguments_raw
         except json.JSONDecodeError:
-            logger.debug(f"📦 参数解析失败，使用部分参数: {arguments_raw[:100]}")
-            arguments = self._parse_partial_arguments(arguments_raw)
+            logger.debug(f"📦 参数解析失败，暂不处理: {arguments_raw}")
+            # 参数解析失败时，不创建或更新工具，等待更完整的数据
+            return
+
+        # 检查参数是否看起来完整（基本的完整性验证）
+        is_args_complete = self._is_arguments_complete(arguments, arguments_raw)
 
         # 检查是否是新工具
         if tool_id not in self.active_tools:
-            logger.debug(f"🎯 发现新工具: {tool_name}(id={tool_id})")
+            logger.debug(f"🎯 发现新工具: {tool_name}(id={tool_id}), 参数完整性: {is_args_complete}")
 
             self.active_tools[tool_id] = {
                 "id": tool_id,
                 "name": tool_name,
                 "arguments": arguments,
+                "arguments_raw": arguments_raw,
                 "status": "active",
                 "sent_start": False,
-                "sent_args": False
+                "last_sent_args": {},  # 跟踪上次发送的参数
+                "args_complete": is_args_complete,
+                "pending_send": True  # 标记需要发送
             }
 
-            if is_stream:
-                # 发送工具开始信号
-                yield self._create_tool_start_chunk(tool_id, tool_name)
+            # 只有在参数看起来完整时才发送工具开始信号
+            if is_stream and is_args_complete:
+                yield self._create_tool_start_chunk(tool_id, tool_name, arguments)
                 self.active_tools[tool_id]["sent_start"] = True
+                self.active_tools[tool_id]["last_sent_args"] = arguments.copy()
+                self.active_tools[tool_id]["pending_send"] = False
+                logger.debug(f"📤 发送完整工具开始: {tool_name}(id={tool_id})")
 
-        # 更新参数（如果有变化）
-        current_tool = self.active_tools[tool_id]
-        if current_tool["arguments"] != arguments:
-            current_tool["arguments"] = arguments
+        else:
+            # 更新现有工具
+            current_tool = self.active_tools[tool_id]
 
-            if is_stream and current_tool["sent_start"] and not current_tool["sent_args"]:
-                # 发送工具参数
-                yield self._create_tool_arguments_chunk(tool_id, arguments)
-                current_tool["sent_args"] = True
+            # 检查是否有实质性改进
+            if self._is_significant_improvement(current_tool["arguments"], arguments,
+                                               current_tool["arguments_raw"], arguments_raw):
+                logger.debug(f"🔄 工具参数有实质性改进: {tool_name}(id={tool_id})")
+
+                current_tool["arguments"] = arguments
+                current_tool["arguments_raw"] = arguments_raw
+                current_tool["args_complete"] = is_args_complete
+
+                # 如果之前没有发送过开始信号，且现在参数完整，发送开始信号
+                if is_stream and not current_tool["sent_start"] and is_args_complete:
+                    yield self._create_tool_start_chunk(tool_id, tool_name, arguments)
+                    current_tool["sent_start"] = True
+                    current_tool["last_sent_args"] = arguments.copy()
+                    current_tool["pending_send"] = False
+                    logger.debug(f"📤 发送延迟的工具开始: {tool_name}(id={tool_id})")
+
+                # 如果已经发送过开始信号，且参数有显著改进，发送参数更新
+                elif is_stream and current_tool["sent_start"] and is_args_complete:
+                    if self._should_send_argument_update(current_tool["last_sent_args"], arguments):
+                        yield self._create_tool_arguments_chunk(tool_id, arguments)
+                        current_tool["last_sent_args"] = arguments.copy()
+                        logger.debug(f"📤 发送参数更新: {tool_name}(id={tool_id})")
+
+    def _is_arguments_complete(self, arguments: Dict[str, Any], arguments_raw: str) -> bool:
+        """
+        检查参数是否看起来完整
+        """
+        if not arguments:
+            return False
+
+        # 检查原始字符串是否看起来完整
+        if not arguments_raw or not arguments_raw.strip():
+            return False
+
+        # 检查是否有明显的截断迹象
+        raw_stripped = arguments_raw.strip()
+
+        # 如果原始字符串不以}结尾，可能是截断的
+        if not raw_stripped.endswith('}') and not raw_stripped.endswith('"'):
+            return False
+
+        # 检查是否有不完整的URL（常见的截断情况）
+        for key, value in arguments.items():
+            if isinstance(value, str):
+                # 检查URL是否看起来完整
+                if 'http' in value.lower():
+                    # 如果URL太短或以不完整的域名结尾，可能是截断的
+                    if len(value) < 10 or value.endswith('.go') or value.endswith('.goo'):
+                        return False
+
+                # 检查其他可能的截断迹象
+                if len(value) > 0 and value[-1] in ['.', '/', ':', '=']:
+                    # 以这些字符结尾可能表示截断
+                    return False
+
+        return True
+
+    def _is_significant_improvement(self, old_args: Dict[str, Any], new_args: Dict[str, Any],
+                                   old_raw: str, new_raw: str) -> bool:
+        """
+        检查新参数是否比旧参数有显著改进
+        """
+        # 如果新参数为空，不是改进
+        if not new_args:
+            return False
+        
+        if len(new_args) > len(old_args):
+            return True
+
+        # 检查值的改进
+        for key, new_value in new_args.items():
+            old_value = old_args.get(key, "")
+
+            if isinstance(new_value, str) and isinstance(old_value, str):
+                # 如果新值明显更长且更完整，是改进
+                if len(new_value) > len(old_value) + 5:  # 至少长5个字符才算显著改进
+                    return True
+
+                # 如果旧值看起来是截断的，新值更完整，是改进
+                if old_value.endswith(('.go', '.goo', '.com/', 'http')) and len(new_value) > len(old_value):
+                    return True
+
+        # 检查原始字符串的改进
+        if len(new_raw) > len(old_raw) + 10:  # 原始字符串显著增长
+            return True
+
+        return False
+
+    def _should_send_argument_update(self, last_sent: Dict[str, Any], new_args: Dict[str, Any]) -> bool:
+        """
+        判断是否应该发送参数更新 - 更严格的标准
+        """
+        # 如果参数完全相同，不发送
+        if last_sent == new_args:
+            return False
+
+        # 如果新参数为空但之前有参数，不发送（避免倒退）
+        if not new_args and last_sent:
+            return False
+
+        # 如果新参数有更多键，发送更新
+        if len(new_args) > len(last_sent):
+            return True
+
+        # 检查是否有值变得显著更完整
+        for key, new_value in new_args.items():
+            last_value = last_sent.get(key, "")
+            if isinstance(new_value, str) and isinstance(last_value, str):
+                # 只有在值显著增长时才发送更新（避免微小变化）
+                if len(new_value) > len(last_value) + 5:
+                    return True
+            elif new_value != last_value and new_value:  # 确保新值不为空
+                return True
+
+        return False
 
     def _handle_partial_tool_block(self, block_content: str, is_stream: bool) -> Generator[str, None, None]:
         """
@@ -225,29 +343,38 @@ class SSEToolHandler:
 
                 # 如果是新工具，先创建记录
                 if tool_id not in self.active_tools:
+                    # 尝试解析部分参数为字典
+                    partial_args_dict = self._parse_partial_arguments(partial_args)
+
                     self.active_tools[tool_id] = {
                         "id": tool_id,
                         "name": tool_name,
-                        "arguments": {},
+                        "arguments": partial_args_dict,
                         "status": "partial",
                         "sent_start": False,
-                        "sent_args": False,
+                        "last_sent_args": {},
+                        "args_complete": False,
                         "partial_args": partial_args
                     }
 
                     if is_stream:
-                        yield self._create_tool_start_chunk(tool_id, tool_name)
+                        yield self._create_tool_start_chunk(tool_id, tool_name, partial_args_dict)
                         self.active_tools[tool_id]["sent_start"] = True
+                        self.active_tools[tool_id]["last_sent_args"] = partial_args_dict.copy()
                 else:
                     # 更新部分参数
                     self.active_tools[tool_id]["partial_args"] = partial_args
+                    # 尝试更新解析的参数
+                    new_partial_dict = self._parse_partial_arguments(partial_args)
+                    if new_partial_dict != self.active_tools[tool_id]["arguments"]:
+                        self.active_tools[tool_id]["arguments"] = new_partial_dict
 
         except Exception as e:
             logger.debug(f"📦 部分块解析失败: {e}")
 
     def _clean_arguments_string(self, arguments_raw: str) -> str:
         """
-        清理和标准化参数字符串
+        清理和标准化参数字符串，改进对不完整JSON的处理
         """
         if not arguments_raw:
             return "{}"
@@ -266,6 +393,12 @@ class SSEToolHandler:
         elif cleaned.startswith('"{\\"') and cleaned.endswith('\\"}'):
             # 双重转义的情况
             cleaned = cleaned[1:-1].replace('\\"', '"')
+        elif cleaned.startswith('"') and cleaned.endswith('"'):
+            # 简单的引号包围，去除外层引号
+            cleaned = cleaned[1:-1]
+
+        # 处理不完整的JSON字符串
+        cleaned = self._fix_incomplete_json(cleaned)
 
         # 标准化空格（移除JSON中的多余空格，但保留字符串值中的空格）
         try:
@@ -276,9 +409,31 @@ class SSEToolHandler:
             cleaned = json.dumps(parsed, ensure_ascii=False, separators=(',', ':'))
         except json.JSONDecodeError:
             # 如果解析失败，只做基本的空格清理
-            pass
+            logger.debug(f"📦 JSON标准化失败，保持原样: {cleaned[:50]}...")
 
         return cleaned
+
+    def _fix_incomplete_json(self, json_str: str) -> str:
+        """
+        修复不完整的JSON字符串
+        """
+        if not json_str:
+            return "{}"
+
+        # 确保以{开头
+        if not json_str.startswith('{'):
+            json_str = '{' + json_str
+
+        # 处理不完整的字符串值
+        if json_str.count('"') % 2 != 0:
+            # 奇数个引号，可能有未闭合的字符串
+            json_str += '"'
+
+        # 确保以}结尾
+        if not json_str.endswith('}'):
+            json_str += '}'
+
+        return json_str
 
     def _parse_partial_arguments(self, arguments_raw: str) -> Dict[str, Any]:
         """
@@ -364,16 +519,29 @@ class SSEToolHandler:
 
     def _complete_active_tools(self, is_stream: bool) -> Generator[str, None, None]:
         """
-        完成所有活跃的工具调用
+        完成所有活跃的工具调用 - 处理待发送的工具
         """
+        tools_to_send = []
+
         for tool_id, tool in self.active_tools.items():
+            # 如果工具还没有发送过且参数看起来完整，现在发送
+            if is_stream and tool.get("pending_send", False) and not tool.get("sent_start", False):
+                if tool.get("args_complete", False):
+                    logger.debug(f"📤 完成时发送待发送工具: {tool['name']}(id={tool_id})")
+                    yield self._create_tool_start_chunk(tool_id, tool["name"], tool["arguments"])
+                    tool["sent_start"] = True
+                    tool["pending_send"] = False
+                    tools_to_send.append(tool)
+                else:
+                    logger.debug(f"⚠️ 跳过不完整的工具: {tool['name']}(id={tool_id})")
+
             tool["status"] = "completed"
             self.completed_tools.append(tool)
             logger.debug(f"✅ 完成工具调用: {tool['name']}(id={tool_id})")
 
         self.active_tools.clear()
 
-        if is_stream and self.completed_tools:
+        if is_stream and (self.completed_tools or tools_to_send):
             # 发送工具完成信号
             yield self._create_tool_finish_chunk()
 
@@ -405,7 +573,7 @@ class SSEToolHandler:
 
             if is_stream:
                 logger.info("🏁 发送工具调用完成信号")
-                yield "data: [DONE]\n\n"
+                yield "data: [DONE]"
 
             # 重置工具调用状态
             self.has_tool_call = False
@@ -446,8 +614,12 @@ class SSEToolHandler:
         self.completed_tools.clear()
         self.tool_blocks_cache.clear()
 
-    def _create_tool_start_chunk(self, tool_id: str, tool_name: str) -> str:
-        """创建工具调用开始的chunk"""
+    def _create_tool_start_chunk(self, tool_id: str, tool_name: str, initial_args: Dict[str, Any] = None) -> str:
+        """创建工具调用开始的chunk，支持初始参数"""
+        # 使用提供的初始参数，如果没有则使用空字典
+        args_dict = initial_args or {}
+        args_str = json.dumps(args_dict, ensure_ascii=False)
+
         chunk = {
             "choices": [
                 {
@@ -458,7 +630,7 @@ class SSEToolHandler:
                             {
                                 "id": tool_id,
                                 "type": "function",
-                                "function": {"name": tool_name, "arguments": "{}"},
+                                "function": {"name": tool_name, "arguments": args_str},
                             }
                         ],
                     },
@@ -476,18 +648,15 @@ class SSEToolHandler:
         return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
     def _create_tool_arguments_chunk(self, tool_id: str, arguments: Dict) -> str:
-        """创建工具参数的chunk"""
+        """创建工具参数的chunk - 只包含参数更新，不包含函数名"""
         chunk = {
             "choices": [
                 {
                     "delta": {
-                        "role": "assistant",
-                        "content": None,
                         "tool_calls": [
                             {
                                 "id": tool_id,
-                                "type": "function",
-                                "function": {"name": None, "arguments": json.dumps(arguments, ensure_ascii=False)},
+                                "function": {"arguments": json.dumps(arguments, ensure_ascii=False)},
                             }
                         ],
                     },

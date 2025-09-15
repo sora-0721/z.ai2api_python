@@ -118,7 +118,6 @@ class Settings(BaseSettings):
     # Retry Configuration
     MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "5"))
     RETRY_DELAY: float = float(os.getenv("RETRY_DELAY", "1.0"))  # 初始重试延迟（秒）
-    RETRY_BACKOFF: float = float(os.getenv("RETRY_BACKOFF", "2.0"))  # 退避系数
 
     # Browser Headers
     CLIENT_HEADERS: Dict[str, str] = {

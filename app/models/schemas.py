@@ -54,7 +54,6 @@ class UpstreamRequest(BaseModel):
     id: Optional[str] = None
     mcp_servers: Optional[List[str]] = None
     model_item: Optional[Dict[str, Any]] = {}  # Model item dictionary
-    tool_servers: Optional[List[str]] = None
     tools: Optional[List[Dict[str, Any]]] = None  # Add tools field for OpenAI compatibility
     variables: Optional[Dict[str, str]] = None
     model_config = {"protected_namespaces": ()}

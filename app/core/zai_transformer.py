@@ -92,7 +92,6 @@ def get_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
     else:
         headers["Referer"] = "https://chat.z.ai/"
 
-    logger.debug(f"使用动态User-Agent: {user_agent[:80]}...")
     return headers
 
 
@@ -105,14 +104,13 @@ def get_auth_token_sync() -> str:
     """同步获取认证令牌（用于非异步场景）"""
     if settings.ANONYMOUS_MODE:
         try:
-            logger.debug("匿名模式：获取新的访客令牌")
             headers = get_dynamic_headers()
             response = requests.get("https://chat.z.ai/api/v1/auths/", headers=headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
                 token = data.get("token", "")
                 if token:
-                    logger.debug(f"成功获取访客令牌: {token[:20]}...")
+                    logger.debug(f"获取访客令牌成功: {token[:20]}...")
                     return token
         except Exception as e:
             logger.warning(f"获取访客令牌失败: {e}")
@@ -152,7 +150,7 @@ class ZAITransformer:
         """异步获取认证令牌"""
         if settings.ANONYMOUS_MODE:
             try:
-                logger.debug("匿名模式：异步获取新的访客令牌")
+    
                 headers = get_dynamic_headers()
                 async with httpx.AsyncClient() as client:
                     response = await client.get(self.auth_url, headers=headers, timeout=10.0)
@@ -160,7 +158,7 @@ class ZAITransformer:
                         data = response.json()
                         token = data.get("token", "")
                         if token:
-                            logger.debug(f"成功获取访客令牌: {token[:20]}...")
+                            logger.debug(f"获取访客令牌成功: {token[:20]}...")
                             return token
             except Exception as e:
                 logger.warning(f"异步获取访客令牌失败: {e}")
@@ -194,8 +192,8 @@ class ZAITransformer:
         转换OpenAI请求为z.ai格式
         整合现有功能：模型映射、MCP服务器等
         """
-        logger.info("🔄 开始转换 OpenAI 请求到 Z.AI 格式")
-        
+        logger.info(f"🔄 开始转换 OpenAI 请求到 Z.AI 格式: {request.get('model', settings.PRIMARY_MODEL)} -> Z.AI")
+
         # 获取认证令牌
         token = await self.get_token()
         logger.debug(f"  使用令牌: {token[:20] if token else 'None'}...")
@@ -210,12 +208,12 @@ class ZAITransformer:
         is_thinking = requested_model == settings.THINKING_MODEL or request.get("reasoning", False)
         is_search = requested_model == settings.SEARCH_MODEL
         is_air = requested_model == settings.AIR_MODEL
-        
-        logger.info(f"  模型分析 - 请求模型: {requested_model}, 思考模式: {is_thinking}, 搜索模式: {is_search}, Air模式: {is_air}")
 
         # 获取上游模型ID（使用模型映射）
         upstream_model_id = self.model_mapping.get(requested_model, "0727-360B-API")
         logger.debug(f"  模型映射: {requested_model} -> {upstream_model_id}")
+        logger.debug(f"  模型特性检测: is_search={is_search}, is_thinking={is_thinking}, is_air={is_air}")
+        logger.debug(f"  SEARCH_MODEL配置: {settings.SEARCH_MODEL}")
 
         # 处理消息列表
         logger.debug(f"  开始处理 {len(request.get('messages', []))} 条消息")
@@ -225,7 +223,7 @@ class ZAITransformer:
 
             # 处理system角色转换
             if msg.get("role") == "system":
-                logger.debug(f"    消息[{idx}]: 转换 system -> user 角色")
+
                 msg["role"] = "user"
                 content = msg.get("content")
 
@@ -257,7 +255,7 @@ class ZAITransformer:
 
             # 处理assistant消息中的reasoning_content
             elif msg.get("role") == "assistant" and msg.get("reasoning_content"):
-                logger.debug(f"    消息[{idx}]: 保留reasoning_content")
+
                 # 如果有reasoning_content，保留它
                 pass
 
@@ -267,11 +265,14 @@ class ZAITransformer:
         mcp_servers = []
         if is_search:
             mcp_servers.append("deep-web-search")
-            logger.info("  启用 MCP 服务器: deep-web-search")
+            logger.info(f"🔍 检测到搜索模型，添加 deep-web-search MCP 服务器")
+        else:
+            logger.debug(f"  非搜索模型，不添加 MCP 服务器")
 
+        logger.debug(f"  MCP服务器列表: {mcp_servers}")
+            
         # 构建上游请求体
         chat_id = generate_uuid()
-        logger.info(f"  生成 chat_id: {chat_id}")
         
         body = {
             "stream": True,  # 总是使用流式
@@ -303,7 +304,6 @@ class ZAITransformer:
                 "{{USER_LANGUAGE}}": "zh-CN",
             },
             "model_item": {},
-            "tool_servers": [],  # 保留工具服务器字段
             "chat_id": chat_id,
             "id": generate_uuid(),
         }
@@ -311,18 +311,12 @@ class ZAITransformer:
         # 处理工具支持
         if settings.TOOL_SUPPORT and not is_thinking and request.get("tools"):
             body["tools"] = request["tools"]
-            logger.info(f"  启用工具支持: {len(request['tools'])} 个工具")
-            for tool_idx, tool in enumerate(request["tools"]):
-                tool_name = tool.get("function", {}).get("name", "unknown")
-                logger.debug(f"    工具[{tool_idx}]: {tool_name}")
+            logger.info(f"启用工具支持: {len(request['tools'])} 个工具")
         else:
             body["tools"] = None
-            if request.get("tools"):
-                logger.debug(f"  工具支持已禁用或在思考模式下，忽略 {len(request.get('tools', []))} 个工具")
 
         # 构建请求配置
         dynamic_headers = get_dynamic_headers(chat_id)
-        logger.debug(f"  生成动态请求头 - User-Agent: {dynamic_headers.get('User-Agent', '')[:80]}...")
 
         config = {
             "url": self.api_url,  # 使用原始URL
@@ -339,9 +333,14 @@ class ZAITransformer:
         }
 
         logger.info("✅ 请求转换完成")
-        logger.debug(f"  目标URL: {config['url']}")
-        logger.debug(f"  请求头数量: {len(config['headers'])}")
-        logger.debug(f"  消息数: {len(body['messages'])}, 工具数: {len(body.get('tools', [])) if body.get('tools') else 0}")
+
+        # 记录关键的请求信息用于调试
+        logger.debug(f"  📋 发送到Z.AI的关键信息:")
+        logger.debug(f"    - 上游模型: {body['model']}")
+        logger.debug(f"    - MCP服务器: {body['mcp_servers']}")
+        logger.debug(f"    - web_search: {body['features']['web_search']}")
+        logger.debug(f"    - auto_web_search: {body['features']['auto_web_search']}")
+        logger.debug(f"    - 消息数量: {len(body['messages'])}")
 
         return {"body": body, "config": config, "token": token}
 
@@ -718,7 +717,7 @@ class ZAITransformer:
                                         yield "data: [DONE]\n\n"
 
                 except json.JSONDecodeError as e:
-                    logger.debug(f"JSON解析错误: {e}, 内容: {chunk_str[:100]}")
+                    logger.debug(f"JSON解析错误: {e}")
                 except Exception as e:
                     logger.error(f"处理chunk错误: {e}")
 
