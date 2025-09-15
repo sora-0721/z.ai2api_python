@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     """Application settings"""
 
     # API Configuration
-    API_ENDPOINT: str = os.getenv("API_ENDPOINT", "https://chat.z.ai/api/chat/completions")
+    API_ENDPOINT: str = "https://chat.z.ai/api/chat/completions"
     AUTH_TOKEN: str = os.getenv("AUTH_TOKEN", "sk-your-api-key")
 
     # 认证token文件路径

@@ -148,7 +148,6 @@ for chunk in response:
 | 变量名                | 默认值                                    | 说明                   |
 | --------------------- | ----------------------------------------- | ---------------------- |
 | `AUTH_TOKEN`          | `sk-your-api-key`                         | 客户端认证密钥         |
-| `API_ENDPOINT`        | `https://chat.z.ai/api/chat/completions`  | 上游 API 地址          |
 | `LISTEN_PORT`         | `8080`                                    | 服务监听端口           |
 | `DEBUG_LOGGING`       | `true`                                    | 调试日志开关           |
 | `ANONYMOUS_MODE`      | `true`                                    | 匿名用户模式开关           |
