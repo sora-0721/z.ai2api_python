@@ -1,0 +1,25 @@
+# 认证Token配置文件
+#
+# 说明：
+# 1. 支持两种格式：每行一个token 或 逗号分隔的token
+# 2. 只包含认证用户token (role: "user")，不要添加匿名用户token (role: "guest")
+# 3. 系统会自动去重和验证token有效性
+# 4. 修改此文件后无需重启服务，系统会自动重新加载
+# 5. 自动跳过空格、换行符和空token
+#
+# 格式1：纯换行分隔
+# token1
+# token2  
+# token3
+
+# 格式2：纯逗号分隔
+# token1,token2,token3
+
+# 格式3：混合格式
+# token1,token2
+# token3
+# token4,token5,token6
+# token7
+
+# 请在下方添加您的认证用户token（使用任一格式）：
+

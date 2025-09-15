@@ -1,6 +1,5 @@
-"""
-Application data models
-"""
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 from typing import Dict, List, Optional, Any, Union, Literal
 from pydantic import BaseModel
@@ -54,8 +53,8 @@ class UpstreamRequest(BaseModel):
     chat_id: Optional[str] = None
     id: Optional[str] = None
     mcp_servers: Optional[List[str]] = None
-    model_item: Optional[ModelItem] = None
-    tool_servers: Optional[List[str]] = None
+    model_item: Optional[Dict[str, Any]] = {}  # Model item dictionary
+    tools: Optional[List[Dict[str, Any]]] = None  # Add tools field for OpenAI compatibility
     variables: Optional[Dict[str, str]] = None
     model_config = {"protected_namespaces": ()}
 

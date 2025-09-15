@@ -1,30 +1,34 @@
 # Z.AI OpenAI API 代理服务
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python: 3.8+](https://img.shields.io/badge/python-3.8+-green.svg)
+![Python: 3.9-3.12](https://img.shields.io/badge/python-3.9--3.12-green.svg)
 ![FastAPI](https://img.shields.io/badge/framework-FastAPI-009688.svg)
-![Version: 1.2.0](https://img.shields.io/badge/version-1.2.0-brightgreen.svg)
+![Version: 0.1.0](https://img.shields.io/badge/version-0.1.0-brightgreen.svg)
 
-轻量级 OpenAI API 兼容代理服务，通过 Claude Code Router 接入 Z.AI，支持 GLM-4.5 系列模型的完整功能。
+> 🎯 **项目愿景**：提供完全兼容 OpenAI API 的 Z.AI 代理服务，让用户无需修改现有代码即可接入 GLM-4.5 系列模型。
+
+轻量级、高性能的 OpenAI API 兼容代理服务，通过 Claude Code Router 接入 Z.AI，支持 GLM-4.5 系列模型的完整功能。
 
 ## ✨ 核心特性
 
 - 🔌 **完全兼容 OpenAI API** - 无缝集成现有应用
 - 🤖 **Claude Code 支持** - 通过 Claude Code Router 接入 Claude Code (**CCR 工具请升级到 v1.0.47 以上**)
 - 🚀 **高性能流式响应** - Server-Sent Events (SSE) 支持
-- 🛠️ **增强工具调用** - 改进的 Function Call 实现
+- 🛠️ **增强工具调用** - 改进的 Function Call 实现，支持复杂工具链
 - 🧠 **思考模式支持** - 智能处理模型推理过程
 - 🔍 **搜索模型集成** - GLM-4.5-Search 网络搜索能力
 - 🐳 **Docker 部署** - 一键容器化部署
 - 🛡️ **会话隔离** - 匿名模式保护隐私
 - 🔧 **灵活配置** - 环境变量灵活配置
 - 📊 **多模型映射** - 智能上游模型路由
+- 🔄 **Token 池管理** - 自动轮询、容错恢复、动态更新
+- 🛡️ **错误处理** - 完善的异常捕获和重试机制
 
 ## 🚀 快速开始
 
 ### 环境要求
 
-- Python 3.8+
+- Python 3.9-3.12
 - pip 或 uv (推荐)
 
 ### 安装运行
@@ -44,7 +48,9 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 python main.py
 ```
 
-服务启动后访问：http://localhost:8080/docs
+>  服务启动后访问接口文档：http://localhost:8080/docs  
+> 💡 **提示**：默认端口为 8080，可通过环境变量 `LISTEN_PORT` 修改  
+> ⚠️ **注意**：请勿将 `AUTH_TOKEN` 泄露给其他人，请使用 `AUTH_TOKENS` 配置多个认证令牌  
 
 ### 基础使用
 
@@ -142,21 +148,51 @@ for chunk in response:
 | 变量名                | 默认值                                    | 说明                   |
 | --------------------- | ----------------------------------------- | ---------------------- |
 | `AUTH_TOKEN`          | `sk-your-api-key`                         | 客户端认证密钥         |
-| `API_ENDPOINT`        | `https://chat.z.ai/api/chat/completions`  | 上游 API 地址          |
 | `LISTEN_PORT`         | `8080`                                    | 服务监听端口           |
 | `DEBUG_LOGGING`       | `true`                                    | 调试日志开关           |
-| `THINKING_PROCESSING` | `think`                                   | 思考内容处理策略       |
-| `ANONYMOUS_MODE`      | `true`                                    | 匿名模式开关           |
+| `ANONYMOUS_MODE`      | `true`                                    | 匿名用户模式开关           |
 | `TOOL_SUPPORT`        | `true`                                    | Function Call 功能开关 |
 | `SKIP_AUTH_TOKEN`     | `false`                                   | 跳过认证令牌验证       |
 | `SCAN_LIMIT`          | `200000`                                  | 扫描限制               |
-| `BACKUP_TOKEN`        | `eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...` | Z.ai 固定访问令牌      |
+| `AUTH_TOKENS_FILE`  | `tokens.txt`                              | 认证token文件路径 |
 
-### 思考内容处理策略
+> 💡 详细配置请查看 `.env.example` 文件  
 
-- `think` - 转换为 `<thinking>` 标签（OpenAI 兼容）
-- `strip` - 移除思考内容
-- `raw` - 保留原始格式
+## 🔄 Token池机制
+
+### 功能特性
+
+- **负载均衡**：轮询使用多个auth token，分散请求负载
+- **自动容错**：token失败时自动切换到下一个可用token
+- **健康监控**：基于Z.AI API的role字段精确验证token类型
+- **自动恢复**：失败token在超时后自动重新尝试
+- **动态管理**：支持运行时更新token池
+- **智能去重**：自动检测和去除重复token
+- **类型验证**：只接受认证用户token (role: "user")，拒绝匿名token (role: "guest")
+
+### Token配置方式
+
+创建 `tokens.txt` 文件，支持多种格式的混合使用：
+1. 每行一个token（换行分隔）
+2. 逗号分隔的token
+3. 混合格式（同时支持换行和逗号分隔）
+
+## 监控API
+
+```bash
+# 查看token池状态
+curl http://localhost:8080/v1/token-pool/status
+
+# 手动健康检查
+curl -X POST http://localhost:8080/v1/token-pool/health-check
+
+# 动态更新token池
+curl -X POST http://localhost:8080/v1/token-pool/update \
+  -H "Content-Type: application/json" \
+  -d '["new_token1", "new_token2"]'
+```
+
+详细文档请参考：[Token池功能说明](TOKEN_POOL_README.md)
 
 ## 🎯 使用场景
 
@@ -202,6 +238,12 @@ if response.choices[0].message.tool_calls:
 
 **Q: 如何获取 AUTH_TOKEN？**
 A: `AUTH_TOKEN` 为自己自定义的 api key，在环境变量中配置，需要保证客户端与服务端一致。
+
+**Q: 遇到 "Illegal header value b'Bearer '" 错误怎么办？**
+A: 这通常是因为 Token 获取失败导致的。请检查：
+- 匿名模式是否正确配置（`ANONYMOUS_MODE=true`）
+- Token 文件是否存在且格式正确（`tokens.txt`）
+- 网络连接是否正常，能否访问 Z.AI API
 
 **Q: 如何通过 Claude Code 使用本服务？**
 
@@ -287,32 +329,25 @@ A: 通过环境变量配置，推荐使用 `.env` 文件。
 
 要使用完整的多模态功能，需要获取正式的 Z.ai API Token：
 
-### 方式 1: 通过 Z.ai 网站
-
-1. 访问 [Z.ai 官网](https://chat.z.ai)
-2. 注册账户并登录，进入 [Z.ai API Keys](https://z.ai/manage-apikey/apikey-list) 设置页面，在该页面设置 _**个人 API Token**_
-3. 将 Token 放置在 `BACKUP_TOKEN` 环境变量中
-
-### 方式 2: 浏览器开发者工具（临时方案）
-
 1. 打开 [Z.ai 聊天界面](https://chat.z.ai)
 2. 按 F12 打开开发者工具
 3. 切换到 "Application" 或 "存储" 标签
 4. 查看 Local Storage 中的认证 token
 5. 复制 token 值设置为环境变量
 
-> ⚠️ **注意**: 方式 2 获取的 token 可能有时效性，建议使用方式 1 获取长期有效的 API Token。  
-> ❗ **重要提示**: 多模态模型需要**官方 Z.ai API 非匿名 Token**，匿名 token 不支持多媒体处理。
+> ❗ **重要提示**: 获取的 token 可能有时效性，多模态模型需要**官方 Z.ai API 非匿名 Token**，匿名 token 不支持多媒体处理  
 
 ## 🛠️ 技术栈
 
 | 组件            | 技术                                                                              | 版本    | 说明                                       |
 | --------------- | --------------------------------------------------------------------------------- | ------- | ------------------------------------------ |
-| **Web 框架**    | [FastAPI](https://fastapi.tiangolo.com/)                                          | 0.104.1 | 高性能异步 Web 框架，支持自动 API 文档生成 |
+| **Web 框架**    | [FastAPI](https://fastapi.tiangolo.com/)                                          | 0.116.1 | 高性能异步 Web 框架，支持自动 API 文档生成 |
 | **ASGI 服务器** | [Granian](https://github.com/emmett-framework/granian)                            | 2.5.2   | 基于 Rust 的高性能 ASGI 服务器，支持热重载 |
-| **HTTP 客户端** | [Requests](https://requests.readthedocs.io/)                                      | 2.32.5  | 简洁易用的 HTTP 库，用于上游 API 调用      |
+| **HTTP 客户端** | [HTTPX](https://www.python-httpx.org/) / [Requests](https://requests.readthedocs.io/) | 0.27.0 / 2.32.5 | 异步/同步 HTTP 库，用于上游 API 调用      |
 | **数据验证**    | [Pydantic](https://pydantic.dev/)                                                 | 2.11.7  | 类型安全的数据验证与序列化                 |
 | **配置管理**    | [Pydantic Settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) | 2.10.1  | 基于 Pydantic 的配置管理                   |
+| **日志系统**    | [Loguru](https://loguru.readthedocs.io/)                                          | 0.7.3   | 高性能结构化日志库                         |
+| **用户代理**    | [Fake UserAgent](https://pypi.org/project/fake-useragent/)                        | 2.2.0   | 动态用户代理生成                           |
 
 ## 🏗️ 技术架构
 
@@ -338,27 +373,27 @@ A: 通过环境变量配置，推荐使用 `.env` 文件。
 
 ```
 z.ai2api_python/
-├── app/
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── config.py          # 配置管理
-│   │   ├── openai.py          # OpenAI API 实现
-│   │   └── response_handlers.py  # 响应处理器
-│   ├── models/
-│   │   ├── __init__.py
-│   │   └── schemas.py         # Pydantic 模型定义
-│   ├── utils/
-│   │   ├── __init__.py
-│   │   ├── helpers.py         # 辅助函数
-│   │   ├── tools.py           # 增强工具调用处理
-│   │   └── sse_parser.py      # SSE 流式解析器
-│   └── __init__.py
-├── tests/                     # 单元测试
-├── deploy/                    # Docker 部署配置
-├── main.py                    # FastAPI 应用入口
-├── requirements.txt           # Python 依赖
-├── .env.example              # 环境变量示例
-└── README.md                  # 项目文档
+├── app/                          # 主应用模块
+│   ├── core/                     # 核心模块
+│   │   ├── config.py            # 配置管理（Pydantic Settings）
+│   │   ├── openai.py            # OpenAI API 兼容层
+│   │   └── zai_transformer.py   # Z.AI 请求/响应转换器
+│   ├── models/                   # 数据模型
+│   │   └── schemas.py           # Pydantic 数据模型
+│   └── utils/                    # 工具模块
+│       ├── logger.py            # Loguru 日志系统
+│       ├── reload_config.py     # 热重载配置
+│       ├── sse_tool_handler.py  # SSE 工具调用处理器
+│       └── token_pool.py        # Token 池管理
+├── tests/                        # 测试文件
+├── deploy/                       # 部署配置
+│   ├── Dockerfile               # Docker 镜像构建
+│   └── docker-compose.yml       # 容器编排
+├── main.py                       # FastAPI 应用入口
+├── requirements.txt              # 依赖清单
+├── pyproject.toml               # 项目配置
+├── tokens.txt.example           # Token 配置文件
+└── .env.example                 # 环境变量示例
 ```
 
 ## ⭐ Star History

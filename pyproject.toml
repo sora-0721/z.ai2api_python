@@ -32,6 +32,8 @@ dependencies = [
     "pydantic-core==2.33.2",
     "typing-inspection==0.4.1",
     "fake-useragent==2.2.0",
+    "loguru==0.7.3",
+    "httpx==0.27.0"
 ]
 
 [project.scripts]
