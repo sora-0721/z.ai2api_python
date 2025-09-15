@@ -156,12 +156,21 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
 
                             # 初始化工具处理器（如果需要）
                             has_tools = transformed["body"].get("tools") is not None
+                            has_mcp_servers = bool(transformed["body"].get("mcp_servers"))
                             tool_handler = None
-                            if has_tools:
+
+                            # 如果有工具定义或MCP服务器，都需要工具处理器
+                            if has_tools or has_mcp_servers:
                                 chat_id = transformed["body"]["chat_id"]
                                 model = request.model
                                 tool_handler = SSEToolHandler(chat_id, model)
-                                logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个工具")
+
+                                if has_tools and has_mcp_servers:
+                                    logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个OpenAI工具 + {len(transformed['body'].get('mcp_servers', []))} 个MCP服务器")
+                                elif has_tools:
+                                    logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个OpenAI工具")
+                                elif has_mcp_servers:
+                                    logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('mcp_servers', []))} 个MCP服务器")
 
                             # 处理状态
                             has_thinking = False
@@ -368,7 +377,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                                             "system_fingerprint": "fp_zai_001",
                                                         }
                                                         output_data = f"data: {json.dumps(content_chunk)}\n\n"
-                                                        logger.debug(f"➡️ 输出内容块到客户端: {output_data[:1000]}...")
+                                                        logger.debug(f"➡️ 输出内容块到客户端: {output_data}")
                                                         yield output_data
 
                                                     # 处理完成

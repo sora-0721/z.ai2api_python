@@ -14,6 +14,7 @@ main.onefile-build/
 *.yaml
 logs/
 backup/
+uv.lock
 
 # AI Toolset
 .augment/

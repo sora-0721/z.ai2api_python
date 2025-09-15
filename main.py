@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import os
+import sys
+import psutil
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +13,7 @@ from app.core import openai
 from app.utils.reload_config import RELOAD_CONFIG
 from app.utils.logger import setup_logger
 from app.utils.token_pool import initialize_token_pool
+from app.utils.process_manager import ensure_service_uniqueness
 
 from granian import Granian
 
@@ -62,14 +66,32 @@ async def root():
 
 
 def run_server():
-    Granian(
-        "main:app",
-        interface="asgi",
-        address="0.0.0.0",
-        port=settings.LISTEN_PORT,
-        reload=False,  # 生产环境请关闭热重载
-        **RELOAD_CONFIG,
-    ).serve()
+    # 服务唯一性检查
+    service_name = settings.SERVICE_NAME
+    if not ensure_service_uniqueness(service_name=service_name, port=settings.LISTEN_PORT):
+        logger.error("❌ 服务已在运行，程序退出")
+        sys.exit(1)
+
+    logger.info(f"🚀 启动 {service_name} 服务...")
+    logger.info(f"📡 监听地址: 0.0.0.0:{settings.LISTEN_PORT}")
+    logger.info(f"🔧 调试模式: {'开启' if settings.DEBUG_LOGGING else '关闭'}")
+    logger.info(f"🔐 匿名模式: {'开启' if settings.ANONYMOUS_MODE else '关闭'}")
+
+    try:
+        Granian(
+            "main:app",
+            interface="asgi",
+            address="0.0.0.0",
+            port=settings.LISTEN_PORT,
+            reload=True,  # 生产环境请关闭热重载
+            process_name=service_name,  # 设置进程名称
+            **RELOAD_CONFIG,
+        ).serve()
+    except KeyboardInterrupt:
+        logger.info("🛑 收到中断信号，正在关闭服务...")
+    except Exception as e:
+        logger.error(f"❌ 服务启动失败: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
