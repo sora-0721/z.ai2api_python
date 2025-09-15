@@ -173,26 +173,10 @@ for chunk in response:
 
 ### Token配置方式
 
-创建 `tokens.txt` 文件，支持两种格式：
-
-**格式1：每行一个token**
-```txt
-# 认证token配置文件
-# 支持注释行（以#开头）和空行
-# 只添加认证用户token (role: "user")
-
-eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItMTIzIn0.signature1
-eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNDU2In0.signature2
-eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNzg5In0.signature3
-```
-
-**格式2：逗号分隔**
-```txt
-# 认证token配置文件
-eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItMTIzIn0.signature1,
-eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNDU2In0.signature2,
-eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNzg5In0.signature3
-```
+创建 `tokens.txt` 文件，支持多种格式的混合使用：
+1. 每行一个token（换行分隔）
+2. 逗号分隔的token
+3. 混合格式（同时支持换行和逗号分隔）
 
 ## 监控API
 

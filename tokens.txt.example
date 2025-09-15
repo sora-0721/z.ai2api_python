@@ -7,15 +7,19 @@
 # 4. 修改此文件后无需重启服务，系统会自动重新加载
 # 5. 自动跳过空格、换行符和空token
 #
-# 格式1：每行一个token
-# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItMTIzIn0.signature1
-# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNDU2In0.signature2
-# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNzg5In0.signature3
-#
-# 格式2：逗号分隔（推荐，更紧凑）
-# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItMTIzIn0.signature1,
-# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNDU2In0.signature2,
-# eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6InVzZXItNzg5In0.signature3
+# 格式1：纯换行分隔
+# token1
+# token2  
+# token3
+
+# 格式2：纯逗号分隔
+# token1,token2,token3
+
+# 格式3：混合格式
+# token1,token2
+# token3
+# token4,token5,token6
+# token7
 
 # 请在下方添加您的认证用户token（使用任一格式）：
 

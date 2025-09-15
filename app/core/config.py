@@ -26,14 +26,10 @@ class Settings(BaseSettings):
         """
         从文件加载token列表
 
-        支持两种格式：
-        1. 每行一个token（原格式）
-        2. 逗号分隔的token（新格式）
-
-        处理规则：
-        - 跳过空行和注释行（以#开头）
-        - 自动检测并处理逗号分隔格式
-        - 去除空格和换行符
+        支持多种格式的混合使用：
+        1. 每行一个token（换行分隔）
+        2. 逗号分隔的token
+        3. 混合格式（同时支持换行和逗号分隔）
         """
         tokens = []
         try:
@@ -45,35 +41,29 @@ class Settings(BaseSettings):
                         logger.debug(f"📄 Token文件为空: {file_path}")
                         return tokens
 
-                    # 检查是否包含逗号分隔格式
-                    if ',' in content:
-                        # 逗号分隔格式：将整个文件内容按逗号分割
-                        logger.debug(f"📄 检测到逗号分隔格式: {file_path}")
+                    logger.debug(f"📄 开始解析token文件: {file_path}")
 
-                        # 移除注释行后再分割
-                        lines = content.split('\n')
-                        clean_content = []
-                        for line in lines:
-                            line = line.strip()
-                            if line and not line.startswith('#'):
-                                clean_content.append(line)
+                    # 智能解析：同时支持换行和逗号分隔
+                    # 1. 先按换行符分割处理每一行
+                    lines = content.split('\n')
 
-                        # 合并所有非注释内容，然后按逗号分割
-                        merged_content = ' '.join(clean_content)
-                        raw_tokens = merged_content.split(',')
+                    for line in lines:
+                        line = line.strip()
+                        # 跳过空行和注释行
+                        if not line or line.startswith('#'):
+                            continue
 
-                        for token in raw_tokens:
-                            token = token.strip()
-                            if token:  # 跳过空token
-                                tokens.append(token)
-                    else:
-                        # 每行一个token格式（原格式）
-                        logger.debug(f"📄 使用每行一个token格式: {file_path}")
-                        for line in content.split('\n'):
-                            line = line.strip()
-                            # 跳过空行和注释行
-                            if line and not line.startswith('#'):
-                                tokens.append(line)
+                        # 2. 检查当前行是否包含逗号分隔
+                        if ',' in line:
+                            # 按逗号分割当前行
+                            comma_tokens = line.split(',')
+                            for token in comma_tokens:
+                                token = token.strip()
+                                if token:  # 跳过空token
+                                    tokens.append(token)
+                        else:
+                            # 整行作为一个token
+                            tokens.append(line)
 
                 logger.info(f"📄 从文件加载了 {len(tokens)} 个token: {file_path}")
             else:
