@@ -209,19 +209,10 @@ class ZAITransformer:
         is_search = requested_model == settings.SEARCH_MODEL
         is_air = requested_model == settings.AIR_MODEL
 
-        # 检查是否需要搜索功能（更灵活的检测）
-        needs_search = (
-            is_search or  # 明确的搜索模型
-            "search" in requested_model.lower() or  # 模型名包含search
-            request.get("enable_search", False) or  # 显式启用搜索
-            (request.get("tools") and any("search" in str(tool).lower() for tool in request.get("tools", [])))  # 工具中包含搜索
-        )
-
         # 获取上游模型ID（使用模型映射）
         upstream_model_id = self.model_mapping.get(requested_model, "0727-360B-API")
         logger.debug(f"  模型映射: {requested_model} -> {upstream_model_id}")
         logger.debug(f"  模型特性检测: is_search={is_search}, is_thinking={is_thinking}, is_air={is_air}")
-        logger.debug(f"  需要搜索功能: {needs_search}")
         logger.debug(f"  SEARCH_MODEL配置: {settings.SEARCH_MODEL}")
 
         # 处理消息列表
@@ -272,27 +263,16 @@ class ZAITransformer:
 
         # 构建MCP服务器列表
         mcp_servers = []
-        if needs_search:
+        if is_search:
             mcp_servers.append("deep-web-search")
-            logger.info(f"🔍 检测到需要搜索功能，添加 deep-web-search MCP 服务器")
-            logger.debug(f"  搜索检测原因: is_search={is_search}, model_name_contains_search={'search' in requested_model.lower()}")
+            logger.info(f"🔍 检测到搜索模型，添加 deep-web-search MCP 服务器")
         else:
-            logger.debug(f"  不需要搜索功能，不添加 MCP 服务器")
+            logger.debug(f"  非搜索模型，不添加 MCP 服务器")
 
         logger.debug(f"  MCP服务器列表: {mcp_servers}")
             
         # 构建上游请求体
         chat_id = generate_uuid()
-
-        # 根据参考文档构建更完整的features配置
-        features_list = []
-        if needs_search:
-            features_list.extend([
-                {"type": "mcp", "server": "deep-web-search", "status": "selected"},
-                {"type": "mcp", "server": "vibe-coding", "status": "hidden"},
-                {"type": "mcp", "server": "ppt-maker", "status": "hidden"},
-                {"type": "mcp", "server": "image-search", "status": "hidden"}
-            ])
 
         body = {
             "stream": True,  # 总是使用流式
@@ -301,11 +281,11 @@ class ZAITransformer:
             "params": {},
             "features": {
                 "image_generation": False,
-                "web_search": needs_search,
-                "auto_web_search": needs_search,
-                "preview_mode": True if needs_search else False,  # 搜索时启用预览模式
+                "web_search": is_search,
+                "auto_web_search": is_search,
+                "preview_mode": False,
                 "flags": [],
-                "features": features_list,
+                "features": [],
                 "enable_thinking": is_thinking,
             },
             "background_tasks": {
@@ -360,7 +340,6 @@ class ZAITransformer:
 
         # 记录关键的请求信息用于调试
         logger.debug(f"  📋 发送到Z.AI的关键信息:")
-        logger.debug(f"    - 原始模型: {requested_model}")
         logger.debug(f"    - 上游模型: {body['model']}")
         logger.debug(f"    - MCP服务器: {body['mcp_servers']}")
         logger.debug(f"    - web_search: {body['features']['web_search']}")
@@ -368,22 +347,10 @@ class ZAITransformer:
         logger.debug(f"    - 消息数量: {len(body['messages'])}")
         tools_count = len(body.get('tools') or [])
         logger.debug(f"    - 工具数量: {tools_count}")
-
-        # 特别记录MCP相关信息
-        if body['mcp_servers']:
-            logger.info(f"🎯 MCP服务器配置成功: {body['mcp_servers']}")
-            logger.debug(f"  📋 完整的features配置: {json.dumps(body['features'], ensure_ascii=False, indent=2)}")
-        else:
-            logger.warning(f"⚠️ 未配置MCP服务器 - 检查模型: {requested_model}, 搜索需求: {needs_search}")
-
-        # 记录完整的请求体（用于调试）
-        logger.debug(f"  📋 完整请求体: {json.dumps(body, ensure_ascii=False, indent=2)}")
-
-        return {"body": body, "config": config, "token": token}
-
+        
     async def transform_response_out(
         self, response_stream: Generator, context: Dict[str, Any]
-    ) -> Generator[str, None, None]:
+    ) -> AsyncGenerator[str, None]:
         """
         转换z.ai响应为OpenAI格式
         支持流式和非流式输出
