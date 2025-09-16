@@ -58,7 +58,6 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
 
         # 使用新的转换器转换请求
         request_dict = request.model_dump()
-        logger.info("🔄 开始转换请求格式: OpenAI -> Z.AI")
         
         transformed = await transformer.transform_request_in(request_dict)
         # logger.debug(f"🔄 转换后 Z.AI 请求体: {json.dumps(transformed['body'], ensure_ascii=False, indent=2)}")
@@ -156,22 +155,14 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
 
                             # 初始化工具处理器（如果需要）
                             has_tools = transformed["body"].get("tools") is not None
-                            has_mcp_servers = bool(transformed["body"].get("mcp_servers"))
                             tool_handler = None
-
-                            # 如果有工具定义或MCP服务器，都需要工具处理器
-                            if has_tools or has_mcp_servers:
+                            
+                            if has_tools:
                                 chat_id = transformed["body"]["chat_id"]
                                 model = request.model
                                 tool_handler = SSEToolHandler(chat_id, model)
-
-                                if has_tools and has_mcp_servers:
-                                    logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个OpenAI工具 + {len(transformed['body'].get('mcp_servers', []))} 个MCP服务器")
-                                elif has_tools:
-                                    logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个OpenAI工具")
-                                elif has_mcp_servers:
-                                    logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('mcp_servers', []))} 个MCP服务器")
-
+                                logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个工具")
+                                
                             # 处理状态
                             has_thinking = False
                             thinking_signature = None
