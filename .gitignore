@@ -5,6 +5,7 @@
 .conda/
 *.zip
 *.txt
+*.pid
 docs/
 output/
 main.build/

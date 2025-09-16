@@ -26,7 +26,6 @@ classifiers = [
 dependencies = [
     "fastapi==0.116.1",
     "granian[reload,pname]==2.5.2",
-    "requests==2.32.5",
     "httpx==0.28.1",
     "pydantic==2.11.7",
     "pydantic-settings==2.10.1",
