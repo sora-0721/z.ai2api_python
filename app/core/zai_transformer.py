@@ -347,7 +347,14 @@ class ZAITransformer:
         logger.debug(f"    - 消息数量: {len(body['messages'])}")
         tools_count = len(body.get('tools') or [])
         logger.debug(f"    - 工具数量: {tools_count}")
-        
+
+        # 返回转换后的请求数据
+        return {
+            "body": body,
+            "config": config,
+            "token": token
+        }
+
     async def transform_response_out(
         self, response_stream: Generator, context: Dict[str, Any]
     ) -> AsyncGenerator[str, None]:
