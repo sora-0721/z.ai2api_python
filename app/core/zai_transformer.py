@@ -5,7 +5,6 @@ import json
 import time
 import uuid
 import random
-import requests
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Generator, AsyncGenerator
 import httpx
@@ -105,13 +104,14 @@ def get_auth_token_sync() -> str:
     if settings.ANONYMOUS_MODE:
         try:
             headers = get_dynamic_headers()
-            response = requests.get("https://chat.z.ai/api/v1/auths/", headers=headers, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                token = data.get("token", "")
-                if token:
-                    logger.debug(f"获取访客令牌成功: {token[:20]}...")
-                    return token
+            with httpx.Client() as client:
+                response = client.get("https://chat.z.ai/api/v1/auths/", headers=headers, timeout=10.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    token = data.get("token", "")
+                    if token:
+                        logger.debug(f"获取访客令牌成功: {token[:20]}...")
+                        return token
         except Exception as e:
             logger.warning(f"获取访客令牌失败: {e}")
 

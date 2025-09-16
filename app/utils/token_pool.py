@@ -12,7 +12,6 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from threading import Lock
 import httpx
-import requests
 
 from app.utils.logger import logger
 
