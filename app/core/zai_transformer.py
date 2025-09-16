@@ -212,8 +212,6 @@ class ZAITransformer:
         # 获取上游模型ID（使用模型映射）
         upstream_model_id = self.model_mapping.get(requested_model, "0727-360B-API")
         logger.debug(f"  模型映射: {requested_model} -> {upstream_model_id}")
-        logger.debug(f"  模型特性检测: is_search={is_search}, is_thinking={is_thinking}, is_air={is_air}")
-        logger.debug(f"  SEARCH_MODEL配置: {settings.SEARCH_MODEL}")
 
         # 处理消息列表
         logger.debug(f"  开始处理 {len(request.get('messages', []))} 条消息")
