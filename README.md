@@ -13,6 +13,7 @@
 
 - 🔌 **完全兼容 OpenAI API** - 无缝集成现有应用
 - 🤖 **Claude Code 支持** - 通过 Claude Code Router 接入 Claude Code (**CCR 工具请升级到 v1.0.47 以上**)
+- 🍒 **Cherry Studio支持** - Cherry Studio 中可以直接调用 MCP 工具
 - 🚀 **高性能流式响应** - Server-Sent Events (SSE) 支持
 - 🛠️ **增强工具调用** - 改进的 Function Call 实现，支持复杂工具链
 - 🧠 **思考模式支持** - 智能处理模型推理过程
@@ -48,38 +49,114 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 python main.py
 ```
 
->  服务启动后访问接口文档：http://localhost:8080/docs  
+> 🍋‍🟩 服务启动后访问接口文档：http://localhost:8080/docs  
 > 💡 **提示**：默认端口为 8080，可通过环境变量 `LISTEN_PORT` 修改  
 > ⚠️ **注意**：请勿将 `AUTH_TOKEN` 泄露给其他人，请使用 `AUTH_TOKENS` 配置多个认证令牌  
 
 ### 基础使用
 
-#### OpenAI API 客户端
-
-```python
-import openai
-
-# 初始化客户端
-client = openai.OpenAI(
-    base_url="http://localhost:8080/v1",
-    api_key="your-auth-token"  # 替换为你的 AUTH_TOKEN
-)
-
-# 普通对话
-response = client.chat.completions.create(
-    model="GLM-4.5",
-    messages=[{"role": "user", "content": "你好，介绍一下 Python"}],
-    stream=False
-)
-
-print(response.choices[0].message.content)
-```
+服务启动后，可以通过标准的 OpenAI API 客户端进行调用。详细的 API 使用方法请参考 [OpenAI API 文档](https://platform.openai.com/docs/api-reference)。
 
 ### Docker 部署
+
+#### 方式一：使用预构建镜像（推荐）
+
+从 Docker Hub 拉取最新镜像：
+
+```bash
+# 拉取最新版本
+docker pull zyphrzero/z-ai2api-python:latest
+
+# 或拉取指定版本
+docker pull zyphrzero/z-ai2api-python:v0.1.0
+```
+
+**快速启动**：
+
+```bash
+# 基础启动（使用默认配置）
+docker run -d \
+  --name z-ai2api \
+  -p 8080:8080 \
+  -e AUTH_TOKEN="sk-your-api-key" \
+  zyphrzero/z-ai2api-python:latest
+
+# 完整配置启动
+docker run -d \
+  --name z-ai2api \
+  -p 8080:8080 \
+  -e AUTH_TOKEN="sk-your-api-key" \
+  -e ANONYMOUS_MODE="true" \
+  -e DEBUG_LOGGING="true" \
+  -e TOOL_SUPPORT="true" \
+  -v $(pwd)/tokens.txt:/app/tokens.txt \
+  -v $(pwd)/logs:/app/logs \
+  zyphrzero/z-ai2api-python:latest
+```
+
+**使用 Docker Compose**：
+
+创建 `docker-compose.yml` 文件：
+
+```yaml
+version: '3.8'
+
+services:
+  z-ai2api:
+    image: zyphrzero/z-ai2api-python:latest
+    container_name: z-ai2api
+    ports:
+      - "8080:8080"
+    environment:
+      - AUTH_TOKEN=sk-your-api-key
+      - ANONYMOUS_MODE=true
+      - DEBUG_LOGGING=true
+      - TOOL_SUPPORT=true
+      - LISTEN_PORT=8080
+    volumes:
+      - ./tokens.txt:/app/tokens.txt
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+```
+
+然后启动：
+
+```bash
+docker-compose up -d
+```
+
+#### 方式二：本地构建
 
 ```bash
 cd deploy
 docker-compose up -d
+```
+
+#### Docker 镜像信息
+
+- **镜像地址**: [https://hub.docker.com/r/zyphrzero/z-ai2api-python](https://hub.docker.com/r/zyphrzero/z-ai2api-python)
+- **支持架构**: `linux/amd64`, `linux/arm64`
+- **基础镜像**: `python:3.11-slim`
+
+#### 数据持久化
+
+为了保持日志和配置文件的持久化，建议挂载以下目录：
+
+```bash
+# 启动时挂载数据目录
+docker run -d \
+  --name z-ai2api \
+  -p 8080:8080 \
+  -e AUTH_TOKEN="sk-your-api-key" \
+  -v $(pwd)/tokens.txt:/app/tokens.txt \
+  -v $(pwd)/logs:/app/logs \
+  -v $(pwd)/.env:/app/.env \
+  zyphrzero/z-ai2api-python:latest
 ```
 
 ## 📖 详细指南
@@ -92,54 +169,14 @@ docker-compose up -d
 | `GLM-4.5-Thinking` | 0727-360B-API | 思考模型    | 显示推理过程，透明度高 |
 | `GLM-4.5-Search`   | 0727-360B-API | 搜索模型    | 实时网络搜索，信息更新 |
 | `GLM-4.5-Air`      | 0727-106B-API | 轻量模型    | 快速响应，高效推理     |
-| `GLM-4.5V`         | glm-4.5v      | ❌ 暂不支持 |                        |
 
 ### Function Call 功能
 
-```python
-# 定义工具
-tools = [{
-    "type": "function",
-    "function": {
-        "name": "get_weather",
-        "description": "获取天气信息",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "city": {"type": "string", "description": "城市名称"}
-            },
-            "required": ["city"]
-        }
-    }
-}]
-
-# 使用工具
-response = client.chat.completions.create(
-    model="GLM-4.5",
-    messages=[{"role": "user", "content": "北京天气怎么样？"}],
-    tools=tools,
-    tool_choice="auto"
-)
-```
+支持完整的 OpenAI Function Call 功能，包括工具定义、自动调用和结果处理。详细使用方法请参考 [OpenAI Function Calling 文档](https://platform.openai.com/docs/guides/function-calling)。
 
 ### 流式响应
 
-```python
-response = client.chat.completions.create(
-    model="GLM-4.5-Thinking",
-    messages=[{"role": "user", "content": "解释量子计算"}],
-    stream=True
-)
-
-for chunk in response:
-    content = chunk.choices[0].delta.content
-    reasoning = chunk.choices[0].delta.reasoning_content
-
-    if content:
-        print(content, end="")
-    if reasoning:
-        print(f"\n🤔 思考: {reasoning}\n")
-```
+支持完整的流式响应功能，包括内容流、思考过程流和工具调用流。设置 `stream=True` 即可启用流式响应。
 
 ## ⚙️ 配置说明
 
@@ -169,6 +206,7 @@ for chunk in response:
 - **动态管理**：支持运行时更新token池
 - **智能去重**：自动检测和去除重复token
 - **类型验证**：只接受认证用户token (role: "user")，拒绝匿名token (role: "guest")
+- **回退机制**：认证模式失败时自动回退到匿名模式，*匿名模式无法回退到认证模式*
 
 ### Token配置方式
 
@@ -192,47 +230,17 @@ curl -X POST http://localhost:8080/v1/token-pool/update \
   -d '["new_token1", "new_token2"]'
 ```
 
-详细文档请参考：[Token池功能说明](TOKEN_POOL_README.md)
-
 ## 🎯 使用场景
 
 ### 1. AI 应用开发
-
-```python
-# 集成到现有应用
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:8080/v1",
-    api_key="your-token"
-)
-
-# 智能客服
-def chat_with_ai(message):
-    response = client.chat.completions.create(
-        model="GLM-4.5",
-        messages=[{"role": "user", "content": message}]
-    )
-    return response.choices[0].message.content
-```
+- **智能客服系统**：集成到现有客服平台，提供 24/7 智能问答服务
+- **内容生成工具**：自动生成文章、摘要、翻译等内容
+- **代码助手**：提供代码补全、解释、优化建议等功能
 
 ### 2. 工具调用集成
-
-```python
-# 结合外部 API
-def call_external_api(tool_name, arguments):
-    # 执行实际工具调用
-    return result
-
-# 处理工具调用
-if response.choices[0].message.tool_calls:
-    for tool_call in response.choices[0].message.tool_calls:
-        result = call_external_api(
-            tool_call.function.name,
-            json.loads(tool_call.function.arguments)
-        )
-        # 将结果返回给模型继续对话
-```
+- **外部 API 集成**：连接天气、搜索、数据库等外部服务
+- **自动化工作流**：构建复杂的多步骤自动化任务
+- **智能决策系统**：基于实时数据进行智能分析和决策
 
 ## ❓ 常见问题
 
@@ -374,33 +382,6 @@ A: 通过环境变量配置，推荐使用 `.env` 文件。
                       │ └─────────────────────┘ │
                       └─────────────────────────┘
                            OpenAI Compatible API
-```
-
-### 项目结构
-
-```
-z.ai2api_python/
-├── app/                          # 主应用模块
-│   ├── core/                     # 核心模块
-│   │   ├── config.py            # 配置管理（Pydantic Settings）
-│   │   ├── openai.py            # OpenAI API 兼容层
-│   │   └── zai_transformer.py   # Z.AI 请求/响应转换器
-│   ├── models/                   # 数据模型
-│   │   └── schemas.py           # Pydantic 数据模型
-│   └── utils/                    # 工具模块
-│       ├── logger.py            # Loguru 日志系统
-│       ├── reload_config.py     # 热重载配置
-│       ├── sse_tool_handler.py  # SSE 工具调用处理器
-│       └── token_pool.py        # Token 池管理
-├── tests/                        # 测试文件
-├── deploy/                       # 部署配置
-│   ├── Dockerfile               # Docker 镜像构建
-│   └── docker-compose.yml       # 容器编排
-├── main.py                       # FastAPI 应用入口
-├── requirements.txt              # 依赖清单
-├── pyproject.toml               # 项目配置
-├── tokens.txt.example           # Token 配置文件
-└── .env.example                 # 环境变量示例
 ```
 
 ## ⭐ Star History
