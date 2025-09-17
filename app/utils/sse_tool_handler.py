@@ -366,33 +366,22 @@ class SSEToolHandler:
 
         logger.debug(f"🔧 开始修复参数: {raw_args[:1000]}{'...' if len(raw_args) > 1000 else ''}")
 
-        # 尝试直接解析
+        # 统一的修复流程：预处理 -> json-repair -> 后处理
         try:
-            args_obj = json.loads(raw_args)
-            result = json.dumps(args_obj, ensure_ascii=False)
-            logger.debug(f"✅ 参数无需修复: {result}")
-            return result
-        except json.JSONDecodeError:
-            pass
+            # 1. 预处理：只处理 json-repair 无法处理的问题
+            processed_args = self._preprocess_json_string(raw_args.strip())
 
-        # 预处理：提取纯 JSON 部分和修复转义引号
-        processed_args = self._preprocess_json_string(raw_args.strip())
-
-        # 使用 json-repair 库进行修复
-        from json_repair import repair_json
-
-        try:
+            # 2. 使用 json-repair 进行主要修复
+            from json_repair import repair_json
             repaired_json = repair_json(processed_args)
             logger.debug(f"🔧 json-repair 修复结果: {repaired_json}")
 
-            # 验证修复结果
+            # 3. 解析并后处理
             args_obj = json.loads(repaired_json)
-            fixed_result = json.dumps(args_obj, ensure_ascii=False)
+            args_obj = self._post_process_args(args_obj)
 
-            # 记录修复前后对比
-            logger.info(f"✅ JSON 修复成功:")
-            logger.info(f"   修复前: {raw_args[:1000]}{'...' if len(raw_args) > 1000 else ''}")
-            logger.info(f"   修复后: {fixed_result}")
+            # 4. 生成最终结果
+            fixed_result = json.dumps(args_obj, ensure_ascii=False)
 
             return fixed_result
 
@@ -400,45 +389,110 @@ class SSEToolHandler:
             logger.error(f"❌ JSON 修复失败: {e}, 原始参数: {raw_args[:1000]}..., 使用空参数")
             return "{}"
 
+    def _post_process_args(self, args_obj: Dict[str, Any]) -> Dict[str, Any]:
+        """统一的后处理方法"""
+        # 修复路径中的过度转义
+        args_obj = self._fix_path_escaping_in_args(args_obj)
+
+        # 修复命令中的多余引号
+        args_obj = self._fix_command_quotes(args_obj)
+
+        return args_obj
+
     def _preprocess_json_string(self, text: str) -> str:
-        """预处理 JSON 字符串，修复转义引号和提取纯 JSON 部分"""
+        """预处理 JSON 字符串，只处理 json-repair 无法处理的问题"""
         import re
 
-        # 1. 如果包含额外内容（如 "result" 字段），提取纯 JSON 部分
-        if '"result"' in text:
-            brace_count = 0
-            json_end = -1
-            for i, char in enumerate(text):
-                if char == '{':
-                    brace_count += 1
-                elif char == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        json_end = i + 1
-                        break
+        # 只保留 json-repair 无法处理的预处理步骤
 
-            if json_end > 0:
-                text = text[:json_end]
-                logger.debug(f"🔧 提取纯 JSON 部分: {text[:1000]}...")
-
-        # 2. 修复缺少开始括号的情况
+        # 1. 修复缺少开始括号的情况（json-repair 无法处理）
         if not text.startswith('{') and text.endswith('}'):
             text = '{' + text
             logger.debug(f"🔧 补全开始括号")
 
-        # 3. 修复转义引号问题
-        # 处理 "key:\"value\"," 模式 -> "key":"value",
-        pattern = r'(["\w]+):\\"([^"\\]*)\\"'
+        # 2. 修复末尾多余的反斜杠和引号（json-repair 可能处理不当）
+        # 匹配模式：字符串值末尾的 \" 后面跟着 } 或 ,
+        # 例如：{"url":"https://www.bilibili.com\"} -> {"url":"https://www.bilibili.com"}
+        # 例如：{"url":"https://www.bilibili.com\",} -> {"url":"https://www.bilibili.com",}
+        pattern = r'([^\\])\\"([}\s,])'
         if re.search(pattern, text):
-            text = re.sub(pattern, r'\1:"\2"', text)
-            logger.debug(f"🔧 修复字段转义引号模式")
-
-        # 处理剩余的转义引号 \" -> "
-        if '\\"' in text:
-            text = text.replace('\\"', '"')
-            logger.debug(f"🔧 替换剩余转义引号")
+            text = re.sub(pattern, r'\1"\2', text)
+            logger.debug(f"🔧 修复末尾多余的反斜杠")
 
         return text
+
+    def _fix_path_escaping_in_args(self, args_obj: Dict[str, Any]) -> Dict[str, Any]:
+        """修复参数对象中路径的过度转义问题"""
+        import re
+
+        # 需要检查的路径字段
+        path_fields = ['file_path', 'path', 'directory', 'folder']
+
+        for field in path_fields:
+            if field in args_obj and isinstance(args_obj[field], str):
+                path_value = args_obj[field]
+
+                # 检查是否是Windows路径且包含过度转义
+                if path_value.startswith('C:') and '\\\\' in path_value:
+                    logger.debug(f"🔍 检查路径字段 {field}: {repr(path_value)}")
+
+                    # 分析路径结构：正常路径应该是 C:\Users\...
+                    # 但过度转义的路径可能是 C:\Users\\Documents（多了一个反斜杠）
+                    # 我们需要找到不正常的双反斜杠模式并修复
+
+                    # 先检查是否有不正常的双反斜杠（不在路径开头）
+                    # 正常：C:\Users\Documents
+                    # 异常：C:\Users\\Documents 或 C:\Users\\\\Documents
+
+                    # 使用更精确的模式：匹配路径分隔符后的额外反斜杠
+                    # 但要保留正常的路径分隔符
+                    fixed_path = path_value
+
+                    # 检查是否有连续的多个反斜杠（超过正常的路径分隔符）
+                    if '\\\\' in path_value:
+                        # 计算反斜杠的数量，如果超过正常数量就修复
+                        parts = path_value.split('\\')
+                        # 重新组装路径，去除空的部分（由多余的反斜杠造成）
+                        clean_parts = [part for part in parts if part]
+                        if len(clean_parts) > 1:
+                            fixed_path = '\\'.join(clean_parts)
+
+                    logger.debug(f"🔍 修复后路径: {repr(fixed_path)}")
+
+                    if fixed_path != path_value:
+                        args_obj[field] = fixed_path
+                        logger.debug(f"🔧 修复字段 {field} 的路径转义: {path_value} -> {fixed_path}")
+                    else:
+                        logger.debug(f"🔍 路径无需修复: {path_value}")
+
+        return args_obj
+
+    def _fix_command_quotes(self, args_obj: Dict[str, Any]) -> Dict[str, Any]:
+        """修复命令中的多余引号问题"""
+        import re
+
+        # 检查命令字段
+        if 'command' in args_obj and isinstance(args_obj['command'], str):
+            command = args_obj['command']
+
+            # 检查是否以双引号结尾（多余的引号）
+            if command.endswith('""'):
+                logger.debug(f"🔧 发现命令末尾多余引号: {command}")
+                # 移除最后一个多余的引号
+                fixed_command = command[:-1]
+                args_obj['command'] = fixed_command
+                logger.debug(f"🔧 修复命令引号: {command} -> {fixed_command}")
+
+            # 检查其他可能的引号问题
+            # 例如：路径末尾的 \"" 模式
+            elif re.search(r'\\""+$', command):
+                logger.debug(f"🔧 发现命令末尾引号模式问题: {command}")
+                # 修复路径末尾的引号问题
+                fixed_command = re.sub(r'\\""+$', '\\"', command)
+                args_obj['command'] = fixed_command
+                logger.debug(f"🔧 修复命令引号模式: {command} -> {fixed_command}")
+
+        return args_obj
 
     def _create_content_chunk(self, content: str) -> Dict[str, Any]:
         """创建内容块"""

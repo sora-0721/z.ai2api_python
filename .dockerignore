@@ -25,6 +25,8 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+tests/
+docs/
 
 # 虚拟环境
 venv/
