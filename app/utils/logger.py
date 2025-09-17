@@ -69,9 +69,10 @@ def get_logger():
     """Get the logger instance"""
     global app_logger
     if app_logger is None:
-
+        # 如果没有设置过logger，使用默认配置
+        logger.remove()  # 移除所有现有处理器
+        logger.add(sys.stderr, level="INFO", format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | <level>{message}</level>")
         app_logger = logger
-        logger.add(sys.stderr, level="INFO")
     return app_logger
 
 

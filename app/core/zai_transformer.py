@@ -101,7 +101,7 @@ def generate_uuid() -> str:
 
 def get_auth_token_sync() -> str:
     """同步获取认证令牌（用于非异步场景）"""
-    # 首先尝试匿名模式（如果启用）
+    # 如果启用匿名模式，只尝试获取访客令牌
     if settings.ANONYMOUS_MODE:
         try:
             headers = get_dynamic_headers()
@@ -116,7 +116,11 @@ def get_auth_token_sync() -> str:
         except Exception as e:
             logger.warning(f"获取访客令牌失败: {e}")
 
-    # 使用token池获取备份令牌
+        # 匿名模式下，如果获取访客令牌失败，直接返回空
+        logger.error("❌ 匿名模式下获取访客令牌失败")
+        return ""
+
+    # 非匿名模式：首先使用token池获取备份令牌
     token_pool = get_token_pool()
     if token_pool:
         token = token_pool.get_next_token()
@@ -124,21 +128,20 @@ def get_auth_token_sync() -> str:
             logger.debug(f"从token池获取令牌: {token[:20]}...")
             return token
 
-    # 如果没有配置匿名模式且没有备份token，尝试降级到匿名模式
-    if not settings.ANONYMOUS_MODE:
-        logger.warning("⚠️ 没有可用的备份token，尝试降级到匿名模式...")
-        try:
-            headers = get_dynamic_headers()
-            with httpx.Client() as client:
-                response = client.get("https://chat.z.ai/api/v1/auths/", headers=headers, timeout=10.0)
-                if response.status_code == 200:
-                    data = response.json()
-                    token = data.get("token", "")
-                    if token:
-                        logger.info(f"✅ 降级到匿名模式成功: {token[:20]}...")
-                        return token
-        except Exception as e:
-            logger.warning(f"降级到匿名模式失败: {e}")
+    # 如果没有备份token，尝试降级到匿名模式
+    logger.warning("⚠️ 没有可用的备份token，尝试降级到匿名模式...")
+    try:
+        headers = get_dynamic_headers()
+        with httpx.Client() as client:
+            response = client.get("https://chat.z.ai/api/v1/auths/", headers=headers, timeout=10.0)
+            if response.status_code == 200:
+                data = response.json()
+                token = data.get("token", "")
+                if token:
+                    logger.info(f"✅ 降级到匿名模式成功: {token[:20]}...")
+                    return token
+    except Exception as e:
+        logger.warning(f"降级到匿名模式失败: {e}")
 
     # 没有可用的token
     logger.error("❌ 所有认证方式都失败了")
@@ -165,7 +168,7 @@ class ZAITransformer:
 
     async def get_token(self) -> str:
         """异步获取认证令牌"""
-        # 首先尝试匿名模式（如果启用）
+        # 如果启用匿名模式，只尝试获取访客令牌
         if settings.ANONYMOUS_MODE:
             try:
                 headers = get_dynamic_headers()
@@ -180,7 +183,11 @@ class ZAITransformer:
             except Exception as e:
                 logger.warning(f"异步获取访客令牌失败: {e}")
 
-        # 使用token池获取备份令牌
+            # 匿名模式下，如果获取访客令牌失败，直接返回空
+            logger.error("❌ 匿名模式下获取访客令牌失败")
+            return ""
+
+        # 非匿名模式：首先使用token池获取备份令牌
         token_pool = get_token_pool()
         if token_pool:
             token = token_pool.get_next_token()
@@ -188,21 +195,20 @@ class ZAITransformer:
                 logger.debug(f"从token池获取令牌: {token[:20]}...")
                 return token
 
-        # 如果没有配置匿名模式且没有备份token，尝试降级到匿名模式
-        if not settings.ANONYMOUS_MODE:
-            logger.warning("⚠️ 没有可用的备份token，尝试降级到匿名模式...")
-            try:
-                headers = get_dynamic_headers()
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(self.auth_url, headers=headers, timeout=10.0)
-                    if response.status_code == 200:
-                        data = response.json()
-                        token = data.get("token", "")
-                        if token:
-                            logger.info(f"✅ 降级到匿名模式成功: {token[:20]}...")
-                            return token
-            except Exception as e:
-                logger.warning(f"降级到匿名模式失败: {e}")
+        # 如果没有备份token，尝试降级到匿名模式
+        logger.warning("⚠️ 没有可用的备份token，尝试降级到匿名模式...")
+        try:
+            headers = get_dynamic_headers()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self.auth_url, headers=headers, timeout=10.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    token = data.get("token", "")
+                    if token:
+                        logger.info(f"✅ 降级到匿名模式成功: {token[:20]}...")
+                        return token
+        except Exception as e:
+            logger.warning(f"降级到匿名模式失败: {e}")
 
         # 没有可用的token
         logger.error("❌ 所有认证方式都失败了")
