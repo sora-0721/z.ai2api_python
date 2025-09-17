@@ -29,6 +29,7 @@ class SSEPhase(Enum):
     TOOL_CALL = "tool_call"
     OTHER = "other"
     ANSWER = "answer"
+    DONE = "done"
 
 
 class SSEToolHandler:
@@ -49,8 +50,12 @@ class SSEToolHandler:
         self.tool_call_usage = {}
         self.content_index = 0  # 工具调用索引
 
-        # 内容缓冲（简化版）
-        self.content_buffer = {}
+        # 性能优化：内容缓冲
+        self.content_buffer = ""
+        self.buffer_size = 0
+        self.last_flush_time = time.time()
+        self.flush_interval = 0.05  # 50ms 刷新间隔
+        self.max_buffer_size = 100  # 最大缓冲字符数
 
         logger.debug(f"🔧 初始化工具处理器: model={model}, stream={stream}")
 
@@ -78,6 +83,10 @@ class SSEToolHandler:
 
             # 阶段变化检测和日志
             if phase != self.current_phase:
+                # 阶段变化时强制刷新缓冲区
+                if hasattr(self, 'content_buffer') and self.content_buffer:
+                    yield from self._flush_content_buffer()
+
                 logger.info(f"📈 SSE 阶段变化: {self.current_phase} → {phase}")
                 content_preview = edit_content or delta_content
                 if content_preview:
@@ -97,7 +106,10 @@ class SSEToolHandler:
                 yield from self._process_other_phase(usage, edit_content)
 
             elif phase == SSEPhase.ANSWER.value:
-                yield from self._process_answer_phase(edit_content)
+                yield from self._process_answer_phase(delta_content)
+
+            elif phase == SSEPhase.DONE.value:
+                yield from self._process_done_phase(chunk_data)
             else:
                 logger.warning(f"⚠️ 未知的 SSE 阶段: {phase}")
 
@@ -143,7 +155,7 @@ class SSEToolHandler:
                     logger.debug(f"📦 累积参数片段: {edit_content[:100]}...")
 
     def _handle_glm_blocks(self, edit_content: str) -> Generator[str, None, None]:
-        """处理 glm_block 标记的内容 - 基于 zai.js 正确实现"""
+        """处理 glm_block 标记的内容"""
         blocks = edit_content.split('<glm_block ')
         logger.debug(f"📦 分割得到 {len(blocks)} 个块")
 
@@ -152,7 +164,7 @@ class SSEToolHandler:
                 continue
 
             if index == 0:
-                # 第一个块：提取参数片段（参考 zai.js 实现）
+                # 第一个块：提取参数片段
                 if self.has_tool_call:
                     logger.debug(f"📦 从第一个块提取参数片段")
                     # 找到 "result" 的位置，提取之前的参数片段
@@ -187,11 +199,11 @@ class SSEToolHandler:
             end_pos = block.rfind('</glm_block>')
 
             if start_pos == -1 or end_pos == -1:
-                logger.warning(f"❌ 无法找到 JSON 内容边界: {block[:50]}...")
+                logger.warning(f"❌ 无法找到 JSON 内容边界: {block[:1000]}...")
                 return
 
             json_content = block[start_pos + 1:end_pos]
-            logger.debug(f"📦 提取的 JSON 内容: {json_content[:100]}...")
+            logger.debug(f"📦 提取的 JSON 内容: {json_content[:1000]}...")
 
             # 解析工具元数据
             metadata_obj = json.loads(json_content)
@@ -207,10 +219,10 @@ class SSEToolHandler:
                 # 只有在这是第二个及以后的工具调用时才递增 index
                 # 第一个工具调用应该使用 index 0
 
-                # 从 metadata.arguments 获取参数起始部分（参考 zai.js 实现）
+                # 从 metadata.arguments 获取参数起始部分
                 if "arguments" in metadata:
                     arguments_str = metadata["arguments"]
-                    # 参考 zai.js：去掉最后一个字符（通常是 "）
+                    # 去掉最后一个字符
                     self.tool_args = arguments_str[:-1] if arguments_str.endswith('"') else arguments_str
                     logger.debug(f"🎯 新工具调用: {self.tool_name}(id={self.tool_id}), 初始参数: {self.tool_args}")
                 else:
@@ -218,7 +230,7 @@ class SSEToolHandler:
                     logger.debug(f"🎯 新工具调用: {self.tool_name}(id={self.tool_id}), 空参数")
 
         except (json.JSONDecodeError, KeyError, AttributeError) as e:
-            logger.error(f"❌ 解析工具元数据失败: {e}, 块内容: {block[:100]}...")
+            logger.error(f"❌ 解析工具元数据失败: {e}, 块内容: {block[:1000]}...")
 
         # 确保返回生成器（即使为空）
         if False:  # 永远不会执行，但确保函数是生成器
@@ -246,16 +258,80 @@ class SSEToolHandler:
             self._reset_all_state()
 
     def _process_answer_phase(self, edit_content: str) -> Generator[str, None, None]:
-        """处理回答阶段"""
+        """处理回答阶段（优化版本）"""
         if not edit_content:
             return
 
-        logger.debug(f"💬 回答内容: +{len(edit_content)} 字符")
+        # 添加到缓冲区
+        self.content_buffer += edit_content
+        self.buffer_size += len(edit_content)
 
-        # 输出回答内容
+        current_time = time.time()
+        time_since_last_flush = current_time - self.last_flush_time
+
+        # 检查是否需要刷新缓冲区
+        should_flush = (
+            self.buffer_size >= self.max_buffer_size or  # 缓冲区满了
+            time_since_last_flush >= self.flush_interval or  # 时间间隔到了
+            '\n' in edit_content or  # 包含换行符
+            '。' in edit_content or '！' in edit_content or '？' in edit_content  # 包含句子结束符
+        )
+
+        if should_flush and self.content_buffer:
+            yield from self._flush_content_buffer()
+
+    def _flush_content_buffer(self) -> Generator[str, None, None]:
+        """刷新内容缓冲区"""
+        if not self.content_buffer:
+            return
+
+        logger.debug(f"💬 刷新缓冲区: {self.buffer_size} 字符")
+
         if self.stream:
-            chunk = self._create_content_chunk(edit_content)
+            chunk = self._create_content_chunk(self.content_buffer)
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+        # 清空缓冲区
+        self.content_buffer = ""
+        self.buffer_size = 0
+        self.last_flush_time = time.time()
+
+    def _process_done_phase(self, chunk_data: Dict[str, Any]) -> Generator[str, None, None]:
+        """处理完成阶段"""
+        logger.info("🏁 对话完成")
+
+        # 先刷新任何剩余的缓冲内容
+        if self.content_buffer:
+            yield from self._flush_content_buffer()
+
+        # 完成任何未完成的工具调用
+        if self.has_tool_call:
+            yield from self._finish_current_tool()
+
+        # 发送流结束标记
+        if self.stream:
+            # 创建最终的完成块
+            final_chunk = {
+                "id": f"chatcmpl-{int(time.time())}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": self.model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop"
+                }]
+            }
+
+            # 如果有 usage 信息，添加到最终块中
+            if "usage" in chunk_data:
+                final_chunk["usage"] = chunk_data["usage"]
+
+            yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        # 重置所有状态
+        self._reset_all_state()
 
     def _finish_current_tool(self) -> Generator[str, None, None]:
         """完成当前工具调用"""
@@ -284,26 +360,55 @@ class SSEToolHandler:
         self._reset_tool_state()
 
     def _fix_tool_arguments(self, raw_args: str) -> str:
-        """修复工具参数格式"""
+        """使用 json-repair 库修复工具参数格式"""
         if not raw_args or raw_args == "{}":
             return "{}"
+
+        logger.debug(f"🔧 开始修复参数: {raw_args[:1000]}{'...' if len(raw_args) > 1000 else ''}")
 
         # 尝试直接解析
         try:
             args_obj = json.loads(raw_args)
-            return json.dumps(args_obj, ensure_ascii=False)
+            result = json.dumps(args_obj, ensure_ascii=False)
+            logger.debug(f"✅ 参数无需修复: {result}")
+            return result
         except json.JSONDecodeError:
             pass
 
-        # 参数修复逻辑 - 只提取 JSON 参数部分
-        test_args = raw_args.strip()
+        # 预处理：提取纯 JSON 部分和修复转义引号
+        processed_args = self._preprocess_json_string(raw_args.strip())
 
-        # 如果包含额外内容，尝试提取纯 JSON 部分
-        if '"result"' in test_args:
-            # 找到第一个完整的 JSON 对象
+        # 使用 json-repair 库进行修复
+        from json_repair import repair_json
+
+        try:
+            repaired_json = repair_json(processed_args)
+            logger.debug(f"🔧 json-repair 修复结果: {repaired_json}")
+
+            # 验证修复结果
+            args_obj = json.loads(repaired_json)
+            fixed_result = json.dumps(args_obj, ensure_ascii=False)
+
+            # 记录修复前后对比
+            logger.info(f"✅ JSON 修复成功:")
+            logger.info(f"   修复前: {raw_args[:1000]}{'...' if len(raw_args) > 1000 else ''}")
+            logger.info(f"   修复后: {fixed_result}")
+
+            return fixed_result
+
+        except Exception as e:
+            logger.error(f"❌ JSON 修复失败: {e}, 原始参数: {raw_args[:1000]}..., 使用空参数")
+            return "{}"
+
+    def _preprocess_json_string(self, text: str) -> str:
+        """预处理 JSON 字符串，修复转义引号和提取纯 JSON 部分"""
+        import re
+
+        # 1. 如果包含额外内容（如 "result" 字段），提取纯 JSON 部分
+        if '"result"' in text:
             brace_count = 0
             json_end = -1
-            for i, char in enumerate(test_args):
+            for i, char in enumerate(text):
                 if char == '{':
                     brace_count += 1
                 elif char == '}':
@@ -313,64 +418,27 @@ class SSEToolHandler:
                         break
 
             if json_end > 0:
-                test_args = test_args[:json_end]
-                logger.debug(f"🔧 提取纯 JSON 部分: {test_args}")
+                text = text[:json_end]
+                logger.debug(f"🔧 提取纯 JSON 部分: {text[:1000]}...")
 
-        # 处理转义引号问题：将 \" 替换为 "
-        if test_args.endswith('\\"}"'):
-            # {"url":"https://bilibili.com\"}" → {"url":"https://bilibili.com"}
-            test_args = test_args[:-4] + '"}'
-            logger.debug(f"🔧 修复转义引号和多余括号: {test_args}")
-        elif test_args.endswith('\\"}'):
-            # {"url":"https://bilibili.com\"} → {"url":"https://bilibili.com"}
-            test_args = test_args[:-3] + '"}'
-            logger.debug(f"🔧 修复转义引号: {test_args}")
-        elif test_args.endswith('\\"'):
-            # {"url":"https://bilibili.com\" → {"url":"https://bilibili.com"}
-            test_args = test_args[:-2] + '"}'
-            logger.debug(f"🔧 补全结束括号: {test_args}")
-        else:
-            # 检查是否以 { 开头
-            if not test_args.startswith("{"):
-                test_args = "{" + test_args
+        # 2. 修复缺少开始括号的情况
+        if not text.startswith('{') and text.endswith('}'):
+            text = '{' + text
+            logger.debug(f"🔧 补全开始括号")
 
-            # 修复内部转义引号问题
-            # 处理类似 "filename:\"bilibili_homepage\"," 的情况
-            # 使用正则表达式进行更精确的替换
-            import re
+        # 3. 修复转义引号问题
+        # 处理 "key:\"value\"," 模式 -> "key":"value",
+        pattern = r'(["\w]+):\\"([^"\\]*)\\"'
+        if re.search(pattern, text):
+            text = re.sub(pattern, r'\1:"\2"', text)
+            logger.debug(f"🔧 修复字段转义引号模式")
 
-            # 模式1: 字段名后的转义引号 "key:\"value\"
-            # 将 "key:\"value\" 替换为 "key":"value"
-            pattern1 = r'(["\w]+):\\"([^"\\]*)\\"'
-            if re.search(pattern1, test_args):
-                test_args = re.sub(pattern1, r'\1:"\2"', test_args)
-                logger.debug(f"🔧 修复字段转义引号: {test_args}")
+        # 处理剩余的转义引号 \" -> "
+        if '\\"' in text:
+            text = text.replace('\\"', '"')
+            logger.debug(f"🔧 替换剩余转义引号")
 
-            # 模式2: 处理剩余的转义引号
-            if '\\"' in test_args:
-                test_args = test_args.replace('\\"', '"')
-                logger.debug(f"🔧 修复剩余转义引号: {test_args}")
-
-            # 修复引号配对（只在没有处理转义引号的情况下）
-            quote_count = test_args.count('"')
-            if quote_count % 2 != 0:
-                test_args += '"'
-                logger.debug(f"🔧 修复引号配对: {test_args}")
-
-            # 补全结束括号（只在没有处理转义引号的情况下）
-            if not test_args.endswith("}"):
-                test_args += "}"
-                logger.debug(f"🔧 补全结束括号: {test_args}")
-
-        # 再次尝试解析
-        try:
-            args_obj = json.loads(test_args)
-            fixed_result = json.dumps(args_obj, ensure_ascii=False)
-            logger.debug(f"✅ 工具参数解析成功: {fixed_result}")
-            return fixed_result
-        except json.JSONDecodeError as e:
-            logger.warning(f"❌ 工具参数解析失败: {e}, 原始参数: {raw_args[:1000]}, 使用空参数")
-            return "{}"
+        return text
 
     def _create_content_chunk(self, content: str) -> Dict[str, Any]:
         """创建内容块"""
@@ -468,10 +536,19 @@ class SSEToolHandler:
 
     def _reset_all_state(self):
         """重置所有状态"""
+        # 先刷新任何剩余的缓冲内容
+        if hasattr(self, 'content_buffer') and self.content_buffer:
+            list(self._flush_content_buffer())  # 消费生成器
+
         self._reset_tool_state()
         self.current_phase = None
         self.tool_call_usage = {}
-        self.content_buffer = {}
+
+        # 重置缓冲区
+        self.content_buffer = ""
+        self.buffer_size = 0
+        self.last_flush_time = time.time()
+
         # content_index 重置为 0，为下一轮对话做准备
         self.content_index = 0
         logger.debug("🔄 重置所有处理器状态")

@@ -41,8 +41,6 @@ class Settings(BaseSettings):
                         logger.debug(f"📄 Token文件为空: {file_path}")
                         return tokens
 
-                    logger.debug(f"📄 开始解析token文件: {file_path}")
-
                     # 智能解析：同时支持换行和逗号分隔
                     # 1. 先按换行符分割处理每一行
                     lines = content.split('\n')

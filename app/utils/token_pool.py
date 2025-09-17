@@ -103,8 +103,8 @@ class TokenPool:
 
         if not self.token_statuses:
             logger.warning("⚠️ Token池为空，将依赖匿名模式")
-        else:
-            logger.info(f"🔧 初始化Token池，共 {len(self.token_statuses)} 个token")
+        # else:
+        #     logger.info(f"🔧 初始化Token池，共 {len(self.token_statuses)} 个token")
     
     def get_next_token(self) -> Optional[str]:
         """
