@@ -8,3 +8,4 @@ typing-inspection==0.4.1
 fake-useragent==2.2.0
 loguru==0.7.3
 psutil>=7.0.0
+json-repair==0.50.1

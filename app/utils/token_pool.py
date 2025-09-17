@@ -93,7 +93,8 @@ class TokenPool:
         # 去重处理
         for token in tokens:
             if token and token not in self.token_statuses:  # 过滤空token和重复token
-                self.token_statuses[token] = TokenStatus(token=token)
+                # 预设为认证用户token，因为这些是用户手动配置的token
+                self.token_statuses[token] = TokenStatus(token=token, token_type="user")
                 unique_tokens.append(token)
 
         duplicate_count = original_count - len(unique_tokens)
@@ -102,30 +103,30 @@ class TokenPool:
 
         if not self.token_statuses:
             logger.warning("⚠️ Token池为空，将依赖匿名模式")
-        else:
-            logger.info(f"🔧 初始化Token池，共 {len(self.token_statuses)} 个token")
+        # else:
+        #     logger.info(f"🔧 初始化Token池，共 {len(self.token_statuses)} 个token")
     
     def get_next_token(self) -> Optional[str]:
         """
         获取下一个可用的token（轮询算法）
-        
+
         Returns:
             可用的token，如果没有可用token则返回None
         """
         with self._lock:
             if not self.token_statuses:
                 return None
-            
+
             available_tokens = self._get_available_tokens()
             if not available_tokens:
                 # 尝试恢复过期的失败token
                 self._try_recover_failed_tokens()
                 available_tokens = self._get_available_tokens()
-                
+
                 if not available_tokens:
                     logger.warning("⚠️ 没有可用的token")
                     return None
-            
+
             # 轮询选择token
             token = available_tokens[self._current_index % len(available_tokens)]
             self._current_index = (self._current_index + 1) % len(available_tokens)
@@ -136,9 +137,9 @@ class TokenPool:
         """
         获取当前可用的认证用户token列表
 
-        只返回满足以下条件的token：
+        返回满足以下条件的token：
         1. is_available = True (可用状态)
-        2. token_type = "user" (认证用户token)
+        2. token_type == "user" (认证用户token)
 
         这确保轮询机制只会选择有效的认证用户token，跳过匿名用户token
         """
@@ -147,7 +148,7 @@ class TokenPool:
             if status.is_available and status.token_type == "user"
         ]
 
-        # 如果没有可用的认证用户token
+        # 检查是否有匿名用户token并给出警告
         if not available_user_tokens and self.token_statuses:
             guest_tokens = [
                 status.token for status in self.token_statuses.values()
@@ -252,7 +253,8 @@ class TokenPool:
                     if token in old_statuses:
                         self.token_statuses[token] = old_statuses[token]
                     else:
-                        self.token_statuses[token] = TokenStatus(token=token)
+                        # 预设为认证用户token，因为这些是用户手动配置的token
+                        self.token_statuses[token] = TokenStatus(token=token, token_type="user")
                     unique_tokens.append(token)
 
             # 记录去重信息

@@ -4,25 +4,85 @@
 import time
 import json
 import asyncio
-from datetime import datetime
 from typing import List, Dict, Any
 from fastapi import APIRouter, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import httpx
 
 from app.core.config import settings
-from app.models.schemas import OpenAIRequest, Message, ModelsResponse, Model
+from app.models.schemas import OpenAIRequest, Message, ModelsResponse, Model, OpenAIResponse, Choice, Usage
 from app.utils.logger import get_logger
-from app.core.zai_transformer import ZAITransformer, generate_uuid
+from app.core.zai_transformer import ZAITransformer
 from app.utils.sse_tool_handler import SSEToolHandler
 from app.utils.token_pool import get_token_pool
 
 logger = get_logger()
-
 router = APIRouter()
-
-# 全局转换器实例
 transformer = ZAITransformer()
+
+
+def create_chunk(chat_id: str, model: str, delta: Dict[str, Any], finish_reason: str = None) -> Dict[str, Any]:
+    """创建标准的 OpenAI chunk 结构"""
+    return {
+        "choices": [{
+            "delta": delta,
+            "finish_reason": finish_reason,
+            "index": 0,
+            "logprobs": None,
+        }],
+        "created": int(time.time()),
+        "id": chat_id,
+        "model": model,
+        "object": "chat.completion.chunk",
+        "system_fingerprint": "fp_zai_001",
+    }
+
+
+async def handle_non_stream_response(stream_response, request: OpenAIRequest) -> JSONResponse:
+    """处理非流式响应"""
+    logger.info("📄 开始处理非流式响应")
+
+    # 收集所有流式数据
+    full_content = []
+    async for chunk_data in stream_response():
+        if chunk_data.startswith("data: "):
+            chunk_str = chunk_data[6:].strip()
+            if chunk_str and chunk_str != "[DONE]":
+                try:
+                    chunk = json.loads(chunk_str)
+                    if "choices" in chunk and chunk["choices"]:
+                        choice = chunk["choices"][0]
+                        if "delta" in choice and "content" in choice["delta"]:
+                            content = choice["delta"]["content"]
+                            if content:
+                                full_content.append(content)
+                except json.JSONDecodeError:
+                    continue
+
+    # 构建响应
+    response_data = OpenAIResponse(
+        id=f"chatcmpl-{int(time.time())}",
+        object="chat.completion",
+        created=int(time.time()),
+        model=request.model,
+        choices=[Choice(
+            index=0,
+            message=Message(
+                role="assistant",
+                content="".join(full_content),
+                tool_calls=None
+            ),
+            finish_reason="stop"
+        )],
+        usage=Usage(
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0
+        )
+    )
+
+    logger.info("✅ 非流式响应处理完成")
+    return JSONResponse(content=response_data.model_dump(exclude_none=True))
 
 
 @router.get("/v1/models")
@@ -58,7 +118,6 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
 
         # 使用新的转换器转换请求
         request_dict = request.model_dump()
-        logger.info("🔄 开始转换请求格式: OpenAI -> Z.AI")
         
         transformed = await transformer.transform_request_in(request_dict)
         # logger.debug(f"🔄 转换后 Z.AI 请求体: {json.dumps(transformed['body'], ensure_ascii=False, indent=2)}")
@@ -128,12 +187,36 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                     return
 
                             elif response.status_code != 200:
-                                # 其他错误，直接返回
+                                # 其他错误，根据状态码决定处理方式
                                 logger.error(f"❌ 上游返回错误: {response.status_code}")
                                 error_text = await response.aread()
                                 error_msg = error_text.decode('utf-8', errors='ignore')
                                 logger.error(f"❌ 错误详情: {error_msg}")
 
+                                # 对于5xx错误，抛出HTTPException
+                                if 500 <= response.status_code < 600:
+                                    if response.status_code == 502:
+                                        raise HTTPException(
+                                            status_code=502,
+                                            detail=f"Upstream service unavailable: {error_msg[:200]}"
+                                        )
+                                    elif response.status_code == 503:
+                                        raise HTTPException(
+                                            status_code=503,
+                                            detail=f"Upstream service temporarily unavailable: {error_msg[:200]}"
+                                        )
+                                    elif response.status_code == 504:
+                                        raise HTTPException(
+                                            status_code=504,
+                                            detail=f"Upstream service timeout: {error_msg[:200]}"
+                                        )
+                                    else:
+                                        raise HTTPException(
+                                            status_code=502,
+                                            detail=f"Upstream server error ({response.status_code}): {error_msg[:200]}"
+                                        )
+
+                                # 对于4xx错误，返回错误响应而不是抛出异常
                                 error_response = {
                                     "error": {
                                         "message": f"Upstream error: {response.status_code}",
@@ -156,22 +239,12 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
 
                             # 初始化工具处理器（如果需要）
                             has_tools = transformed["body"].get("tools") is not None
-                            has_mcp_servers = bool(transformed["body"].get("mcp_servers"))
                             tool_handler = None
 
-                            # 如果有工具定义或MCP服务器，都需要工具处理器
-                            if has_tools or has_mcp_servers:
-                                chat_id = transformed["body"]["chat_id"]
-                                model = request.model
-                                tool_handler = SSEToolHandler(chat_id, model)
-
-                                if has_tools and has_mcp_servers:
-                                    logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个OpenAI工具 + {len(transformed['body'].get('mcp_servers', []))} 个MCP服务器")
-                                elif has_tools:
-                                    logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个OpenAI工具")
-                                elif has_mcp_servers:
-                                    logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('mcp_servers', []))} 个MCP服务器")
-
+                            if has_tools:
+                                tool_handler = SSEToolHandler(request.model, stream=True)
+                                logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个工具")
+                                
                             # 处理状态
                             has_thinking = False
                             thinking_signature = None
@@ -216,37 +289,31 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                                     logger.info(f"📈 SSE 阶段: {phase}")
                                                     stream_response._last_phase = phase
 
-                                                # 处理工具调用
-                                                if phase == "tool_call" and tool_handler:
-                                                    for output in tool_handler.process_tool_call_phase(data, True):
+                                                # 使用新的工具处理器处理所有阶段
+                                                if tool_handler:
+                                                    # 构建 SSE 数据块，包含所有必要字段
+                                                    sse_chunk = {
+                                                        "phase": phase,
+                                                        "edit_content": data.get("edit_content", ""),
+                                                        "delta_content": data.get("delta_content", ""),
+                                                        "edit_index": data.get("edit_index"),
+                                                        "usage": data.get("usage", {})
+                                                    }
+
+                                                    # 处理工具调用并输出结果
+                                                    for output in tool_handler.process_sse_chunk(sse_chunk):
                                                         yield output
 
-                                                # 处理其他阶段（工具结束）
-                                                elif phase == "other" and tool_handler:
-                                                    for output in tool_handler.process_other_phase(data, True):
-                                                        yield output
-
-                                                # 处理思考内容
+                                                # 非工具调用模式 - 处理思考内容
                                                 elif phase == "thinking":
                                                     if not has_thinking:
                                                         has_thinking = True
-                                                        has_thinking = True
                                                         # 发送初始角色
-                                                        role_chunk = {
-                                                            "choices": [
-                                                                {
-                                                                    "delta": {"role": "assistant"},
-                                                                    "finish_reason": None,
-                                                                    "index": 0,
-                                                                    "logprobs": None,
-                                                                }
-                                                            ],
-                                                            "created": int(time.time()),
-                                                            "id": transformed["body"]["chat_id"],
-                                                            "model": request.model,
-                                                            "object": "chat.completion.chunk",
-                                                            "system_fingerprint": "fp_zai_001",
-                                                        }
+                                                        role_chunk = create_chunk(
+                                                            transformed["body"]["chat_id"],
+                                                            request.model,
+                                                            {"role": "assistant"}
+                                                        )
                                                         yield f"data: {json.dumps(role_chunk)}\n\n"
 
                                                     delta_content = data.get("delta_content", "")
@@ -261,24 +328,14 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                                         else:
                                                             content = delta_content
 
-                                                        thinking_chunk = {
-                                                            "choices": [
-                                                                {
-                                                                    "delta": {
-                                                                        "role": "assistant",
-                                                                        "thinking": {"content": content},
-                                                                    },
-                                                                    "finish_reason": None,
-                                                                    "index": 0,
-                                                                    "logprobs": None,
-                                                                }
-                                                            ],
-                                                            "created": int(time.time()),
-                                                            "id": transformed["body"]["chat_id"],
-                                                            "model": request.model,
-                                                            "object": "chat.completion.chunk",
-                                                            "system_fingerprint": "fp_zai_001",
-                                                        }
+                                                        thinking_chunk = create_chunk(
+                                                            transformed["body"]["chat_id"],
+                                                            request.model,
+                                                            {
+                                                                "role": "assistant",
+                                                                "thinking": {"content": content}
+                                                            }
+                                                        )
                                                         yield f"data: {json.dumps(thinking_chunk)}\n\n"
 
                                                 # 处理答案内容
@@ -291,91 +348,51 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                                         if has_thinking:
                                                             # 发送思考签名
                                                             thinking_signature = str(int(time.time() * 1000))
-                                                            sig_chunk = {
-                                                                "choices": [
-                                                                    {
-                                                                        "delta": {
-                                                                            "role": "assistant",
-                                                                            "thinking": {
-                                                                                "content": "",
-                                                                                "signature": thinking_signature,
-                                                                            },
-                                                                        },
-                                                                        "finish_reason": None,
-                                                                        "index": 0,
-                                                                        "logprobs": None,
+                                                            sig_chunk = create_chunk(
+                                                                transformed["body"]["chat_id"],
+                                                                request.model,
+                                                                {
+                                                                    "role": "assistant",
+                                                                    "thinking": {
+                                                                        "content": "",
+                                                                        "signature": thinking_signature,
                                                                     }
-                                                                ],
-                                                                "created": int(time.time()),
-                                                                "id": transformed["body"]["chat_id"],
-                                                                "model": request.model,
-                                                                "object": "chat.completion.chunk",
-                                                                "system_fingerprint": "fp_zai_001",
-                                                            }
+                                                                }
+                                                            )
                                                             yield f"data: {json.dumps(sig_chunk)}\n\n"
 
                                                         # 提取答案内容
                                                         content_after = edit_content.split("</details>\n")[-1]
                                                         if content_after:
-                                                            content_chunk = {
-                                                                "choices": [
-                                                                    {
-                                                                        "delta": {
-                                                                            "role": "assistant",
-                                                                            "content": content_after,
-                                                                        },
-                                                                        "finish_reason": None,
-                                                                        "index": 0,
-                                                                        "logprobs": None,
-                                                                    }
-                                                                ],
-                                                                "created": int(time.time()),
-                                                                "id": transformed["body"]["chat_id"],
-                                                                "model": request.model,
-                                                                "object": "chat.completion.chunk",
-                                                                "system_fingerprint": "fp_zai_001",
-                                                            }
+                                                            content_chunk = create_chunk(
+                                                                transformed["body"]["chat_id"],
+                                                                request.model,
+                                                                {
+                                                                    "role": "assistant",
+                                                                    "content": content_after
+                                                                }
+                                                            )
                                                             yield f"data: {json.dumps(content_chunk)}\n\n"
 
                                                     # 处理增量内容
                                                     elif delta_content:
                                                         # 如果还没有发送角色
                                                         if not has_thinking:
-                                                            role_chunk = {
-                                                                "choices": [
-                                                                    {
-                                                                        "delta": {"role": "assistant"},
-                                                                        "finish_reason": None,
-                                                                        "index": 0,
-                                                                        "logprobs": None,
-                                                                    }
-                                                                ],
-                                                                "created": int(time.time()),
-                                                                "id": transformed["body"]["chat_id"],
-                                                                "model": request.model,
-                                                                "object": "chat.completion.chunk",
-                                                                "system_fingerprint": "fp_zai_001",
-                                                            }
+                                                            role_chunk = create_chunk(
+                                                                transformed["body"]["chat_id"],
+                                                                request.model,
+                                                                {"role": "assistant"}
+                                                            )
                                                             yield f"data: {json.dumps(role_chunk)}\n\n"
 
-                                                        content_chunk = {
-                                                            "choices": [
-                                                                {
-                                                                    "delta": {
-                                                                        "role": "assistant",
-                                                                        "content": delta_content,
-                                                                    },
-                                                                    "finish_reason": None,
-                                                                    "index": 0,
-                                                                    "logprobs": None,
-                                                                }
-                                                            ],
-                                                            "created": int(time.time()),
-                                                            "id": transformed["body"]["chat_id"],
-                                                            "model": request.model,
-                                                            "object": "chat.completion.chunk",
-                                                            "system_fingerprint": "fp_zai_001",
-                                                        }
+                                                        content_chunk = create_chunk(
+                                                            transformed["body"]["chat_id"],
+                                                            request.model,
+                                                            {
+                                                                "role": "assistant",
+                                                                "content": delta_content
+                                                            }
+                                                        )
                                                         output_data = f"data: {json.dumps(content_chunk)}\n\n"
                                                         logger.debug(f"➡️ 输出内容块到客户端: {output_data}")
                                                         yield output_data
@@ -385,23 +402,15 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                                         logger.info(f"📦 完成响应 - 使用统计: {json.dumps(data['usage'])}")
 
                                                         # 只有在非工具调用模式下才发送普通完成信号
-                                                        if not tool_handler or not tool_handler.has_tool_call:
-                                                            finish_chunk = {
-                                                                "choices": [
-                                                                    {
-                                                                        "delta": {"role": "assistant", "content": ""},
-                                                                        "finish_reason": "stop",
-                                                                        "index": 0,
-                                                                        "logprobs": None,
-                                                                    }
-                                                                ],
-                                                                "usage": data["usage"],
-                                                                "created": int(time.time()),
-                                                                "id": transformed["body"]["chat_id"],
-                                                                "model": request.model,
-                                                                "object": "chat.completion.chunk",
-                                                                "system_fingerprint": "fp_zai_001",
-                                                            }
+                                                        if not tool_handler:
+                                                            finish_chunk = create_chunk(
+                                                                transformed["body"]["chat_id"],
+                                                                request.model,
+                                                                {"role": "assistant", "content": ""},
+                                                                "stop"
+                                                            )
+                                                            finish_chunk["usage"] = data["usage"]
+
                                                             finish_output = f"data: {json.dumps(finish_chunk)}\n\n"
                                                             logger.debug(f"➡️ 发送完成信号: {finish_output[:1000]}...")
                                                             yield finish_output
@@ -413,8 +422,8 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                         except Exception as e:
                                             logger.error(f"❌ 处理chunk错误: {e}")
 
-                            # 确保发送结束信号
-                            if not tool_handler or not tool_handler.has_tool_call:
+                            # 工具处理器会自动发送结束信号，这里不需要重复发送
+                            if not tool_handler:
                                 logger.debug("📤 发送最终 [DONE] 信号")
                                 yield "data: [DONE]\n\n"
 
@@ -427,6 +436,16 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                     import traceback
                     logger.error(traceback.format_exc())
 
+                    # 检查是否是网络连接错误
+                    error_str = str(e).lower()
+                    is_connection_error = any(keyword in error_str for keyword in [
+                        'server disconnected', 'connection closed', 'connection reset',
+                        'timeout', 'connection error', 'network error'
+                    ])
+
+                    # 检查是否是特定的 httpcore 错误
+                    is_httpcore_error = 'httpcore' in str(type(e)) or 'RemoteProtocolError' in str(type(e))
+
                     # 标记token失败（如果不是匿名模式）
                     if current_token and not settings.ANONYMOUS_MODE:
                         transformer.mark_token_failure(current_token, e)
@@ -435,44 +454,48 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                     retry_count += 1
                     last_error = str(e)
 
+                    # 对于严重的连接错误，在达到重试上限时抛出 HTTPException
                     if retry_count > settings.MAX_RETRIES:
-                        # 达到最大重试次数，返回错误
-                        logger.error(f"❌ 达到最大重试次数 ({settings.MAX_RETRIES})，流处理失败")
-                        error_response = {
-                            "error": {
-                                "message": f"Stream processing failed after {settings.MAX_RETRIES} retries: {last_error}",
-                                "type": "stream_error"
+                        if is_connection_error or is_httpcore_error:
+                            logger.error(f"❌ 上游服务连接失败，重试次数已达上限")
+                            raise HTTPException(
+                                status_code=502,
+                                detail=f"Upstream service connection failed: {last_error}"
+                            )
+                        else:
+                            # 达到最大重试次数，返回错误
+                            logger.error(f"❌ 达到最大重试次数 ({settings.MAX_RETRIES})，流处理失败")
+                            error_response = {
+                                "error": {
+                                    "message": f"Stream processing failed after {settings.MAX_RETRIES} retries: {last_error}",
+                                    "type": "stream_error"
+                                }
                             }
-                        }
-                        yield f"data: {json.dumps(error_response)}\n\n"
-                        yield "data: [DONE]\n\n"
-                        return
+                            yield f"data: {json.dumps(error_response)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                    else:
+                        # 继续重试
+                        if is_connection_error or is_httpcore_error:
+                            logger.warning(f"⚠️ 连接错误，重试请求 ({retry_count}/{settings.MAX_RETRIES})")
+                        else:
+                            logger.warning(f"⚠️ 重试请求 ({retry_count}/{settings.MAX_RETRIES})")
+                        continue
 
-        # 返回流式响应
-        logger.info("🚀 启动 SSE 流式响应")
-        
-        # 创建一个包装的生成器来追踪数据流
-        async def logged_stream():
-            chunk_count = 0
-            try:
-                logger.debug("📤 开始向客户端流式传输数据...")
-                async for chunk in stream_response():
-                    chunk_count += 1
-                    logger.debug(f"📤 发送块[{chunk_count}]: {chunk[:1000]}..." if len(chunk) > 1000 else f"  📤 发送块[{chunk_count}]: {chunk}")
-                    yield chunk
-                logger.info(f"✅ 流式传输完成，共发送 {chunk_count} 个数据块")
-            except Exception as e:
-                logger.error(f"❌ 流式传输中断: {e}")
-                raise
-        
-        return StreamingResponse(
-            logged_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
+        # 根据请求类型返回响应
+        if request.stream:
+            logger.info("🚀 启动 SSE 流式响应")
+            return StreamingResponse(
+                stream_response(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+        else:
+            logger.info("📄 处理非流式响应")
+            return await handle_non_stream_response(stream_response, request)
 
     except HTTPException:
         raise
@@ -522,44 +545,27 @@ async def trigger_health_check():
         if not token_pool:
             raise HTTPException(status_code=404, detail="Token池未初始化")
 
-        # 记录开始时间
-        import time
         start_time = time.time()
-
         logger.info("🔍 API触发Token池健康检查...")
         await token_pool.health_check_all()
-
-        # 计算耗时
         duration = time.time() - start_time
 
         pool_status = token_pool.get_pool_status()
-
-        # 统计健康检查结果 - 基于实际的健康状态
         total_tokens = pool_status['total_tokens']
         healthy_tokens = sum(1 for token_info in pool_status['tokens'] if token_info['is_healthy'])
-        unhealthy_tokens = total_tokens - healthy_tokens
 
-        # 构建响应
         response = {
             "status": "completed",
             "message": f"健康检查已完成，耗时 {duration:.2f} 秒",
             "summary": {
                 "total_tokens": total_tokens,
                 "healthy_tokens": healthy_tokens,
-                "unhealthy_tokens": unhealthy_tokens,
+                "unhealthy_tokens": total_tokens - healthy_tokens,
                 "health_rate": f"{(healthy_tokens/total_tokens*100):.1f}%" if total_tokens > 0 else "0%",
                 "duration_seconds": round(duration, 2)
             },
             "pool_info": pool_status
         }
-
-        # 添加建议
-        if unhealthy_tokens > 0:
-            response["recommendations"] = []
-            if unhealthy_tokens == total_tokens:
-                response["recommendations"].append("所有token都不健康，请检查token配置和网络连接")
-            else:
-                response["recommendations"].append(f"有 {unhealthy_tokens} 个token不健康，建议检查这些token的有效性")
 
         logger.info(f"✅ API健康检查完成: {healthy_tokens}/{total_tokens} 个token健康")
         return response
@@ -569,25 +575,22 @@ async def trigger_health_check():
 
 
 @router.post("/v1/token-pool/update")
-async def update_token_pool(tokens: List[str]):
+async def update_token_pool_endpoint(tokens: List[str]):
     """动态更新token池"""
     try:
         from app.utils.token_pool import update_token_pool
 
-        # 过滤空token
         valid_tokens = [token.strip() for token in tokens if token.strip()]
         if not valid_tokens:
             raise HTTPException(status_code=400, detail="至少需要提供一个有效的token")
 
         update_token_pool(valid_tokens)
-
         token_pool = get_token_pool()
-        pool_status = token_pool.get_pool_status() if token_pool else None
 
         return {
             "status": "updated",
             "message": f"Token池已更新，共 {len(valid_tokens)} 个token",
-            "pool_info": pool_status
+            "pool_info": token_pool.get_pool_status() if token_pool else None
         }
     except Exception as e:
         logger.error(f"更新token池失败: {e}")

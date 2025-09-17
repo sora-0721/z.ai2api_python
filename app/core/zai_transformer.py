@@ -101,6 +101,7 @@ def generate_uuid() -> str:
 
 def get_auth_token_sync() -> str:
     """同步获取认证令牌（用于非异步场景）"""
+    # 首先尝试匿名模式（如果启用）
     if settings.ANONYMOUS_MODE:
         try:
             headers = get_dynamic_headers()
@@ -123,8 +124,24 @@ def get_auth_token_sync() -> str:
             logger.debug(f"从token池获取令牌: {token[:20]}...")
             return token
 
+    # 如果没有配置匿名模式且没有备份token，尝试降级到匿名模式
+    if not settings.ANONYMOUS_MODE:
+        logger.warning("⚠️ 没有可用的备份token，尝试降级到匿名模式...")
+        try:
+            headers = get_dynamic_headers()
+            with httpx.Client() as client:
+                response = client.get("https://chat.z.ai/api/v1/auths/", headers=headers, timeout=10.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    token = data.get("token", "")
+                    if token:
+                        logger.info(f"✅ 降级到匿名模式成功: {token[:20]}...")
+                        return token
+        except Exception as e:
+            logger.warning(f"降级到匿名模式失败: {e}")
+
     # 没有可用的token
-    logger.warning("⚠️ 没有可用的备份token")
+    logger.error("❌ 所有认证方式都失败了")
     return ""
 
 
@@ -148,9 +165,9 @@ class ZAITransformer:
 
     async def get_token(self) -> str:
         """异步获取认证令牌"""
+        # 首先尝试匿名模式（如果启用）
         if settings.ANONYMOUS_MODE:
             try:
-    
                 headers = get_dynamic_headers()
                 async with httpx.AsyncClient() as client:
                     response = await client.get(self.auth_url, headers=headers, timeout=10.0)
@@ -171,8 +188,24 @@ class ZAITransformer:
                 logger.debug(f"从token池获取令牌: {token[:20]}...")
                 return token
 
+        # 如果没有配置匿名模式且没有备份token，尝试降级到匿名模式
+        if not settings.ANONYMOUS_MODE:
+            logger.warning("⚠️ 没有可用的备份token，尝试降级到匿名模式...")
+            try:
+                headers = get_dynamic_headers()
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(self.auth_url, headers=headers, timeout=10.0)
+                    if response.status_code == 200:
+                        data = response.json()
+                        token = data.get("token", "")
+                        if token:
+                            logger.info(f"✅ 降级到匿名模式成功: {token[:20]}...")
+                            return token
+            except Exception as e:
+                logger.warning(f"降级到匿名模式失败: {e}")
+
         # 没有可用的token
-        logger.warning("⚠️ 没有可用的备份token")
+        logger.error("❌ 所有认证方式都失败了")
         return ""
 
     def mark_token_success(self, token: str):
@@ -200,8 +233,23 @@ class ZAITransformer:
 
         # 检查token是否有效
         if not token:
-            logger.error("❌ 无法获取有效的认证令牌")
-            raise Exception("无法获取有效的认证令牌，请检查匿名模式配置或token池配置")
+            # 提供详细的配置建议
+            error_msg = "❌ 无法获取有效的认证令牌"
+            suggestions = []
+
+            if not settings.ANONYMOUS_MODE:
+                suggestions.append("1. 设置 ANONYMOUS_MODE=true 启用匿名模式")
+
+            if not settings.AUTH_TOKENS_FILE:
+                suggestions.append("2. 配置 AUTH_TOKENS_FILE 并创建对应的token文件")
+            elif settings.AUTH_TOKENS_FILE and not settings.auth_token_list:
+                suggestions.append(f"3. 检查token文件 '{settings.AUTH_TOKENS_FILE}' 是否存在且包含有效token")
+
+            if suggestions:
+                error_msg += "\n建议的解决方案：\n" + "\n".join(suggestions)
+
+            logger.error(error_msg)
+            raise Exception("无法获取有效的认证令牌，请检查配置")
 
         # 确定请求的模型特性
         requested_model = request.get("model", settings.PRIMARY_MODEL)
@@ -212,8 +260,6 @@ class ZAITransformer:
         # 获取上游模型ID（使用模型映射）
         upstream_model_id = self.model_mapping.get(requested_model, "0727-360B-API")
         logger.debug(f"  模型映射: {requested_model} -> {upstream_model_id}")
-        logger.debug(f"  模型特性检测: is_search={is_search}, is_thinking={is_thinking}, is_air={is_air}")
-        logger.debug(f"  SEARCH_MODEL配置: {settings.SEARCH_MODEL}")
 
         # 处理消息列表
         logger.debug(f"  开始处理 {len(request.get('messages', []))} 条消息")
