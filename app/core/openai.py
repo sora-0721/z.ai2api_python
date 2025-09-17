@@ -187,12 +187,36 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                     return
 
                             elif response.status_code != 200:
-                                # 其他错误，直接返回
+                                # 其他错误，根据状态码决定处理方式
                                 logger.error(f"❌ 上游返回错误: {response.status_code}")
                                 error_text = await response.aread()
                                 error_msg = error_text.decode('utf-8', errors='ignore')
                                 logger.error(f"❌ 错误详情: {error_msg}")
 
+                                # 对于5xx错误，抛出HTTPException
+                                if 500 <= response.status_code < 600:
+                                    if response.status_code == 502:
+                                        raise HTTPException(
+                                            status_code=502,
+                                            detail=f"Upstream service unavailable: {error_msg[:200]}"
+                                        )
+                                    elif response.status_code == 503:
+                                        raise HTTPException(
+                                            status_code=503,
+                                            detail=f"Upstream service temporarily unavailable: {error_msg[:200]}"
+                                        )
+                                    elif response.status_code == 504:
+                                        raise HTTPException(
+                                            status_code=504,
+                                            detail=f"Upstream service timeout: {error_msg[:200]}"
+                                        )
+                                    else:
+                                        raise HTTPException(
+                                            status_code=502,
+                                            detail=f"Upstream server error ({response.status_code}): {error_msg[:200]}"
+                                        )
+
+                                # 对于4xx错误，返回错误响应而不是抛出异常
                                 error_response = {
                                     "error": {
                                         "message": f"Upstream error: {response.status_code}",
@@ -412,6 +436,16 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                     import traceback
                     logger.error(traceback.format_exc())
 
+                    # 检查是否是网络连接错误
+                    error_str = str(e).lower()
+                    is_connection_error = any(keyword in error_str for keyword in [
+                        'server disconnected', 'connection closed', 'connection reset',
+                        'timeout', 'connection error', 'network error'
+                    ])
+
+                    # 检查是否是特定的 httpcore 错误
+                    is_httpcore_error = 'httpcore' in str(type(e)) or 'RemoteProtocolError' in str(type(e))
+
                     # 标记token失败（如果不是匿名模式）
                     if current_token and not settings.ANONYMOUS_MODE:
                         transformer.mark_token_failure(current_token, e)
@@ -420,18 +454,33 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                     retry_count += 1
                     last_error = str(e)
 
+                    # 对于严重的连接错误，在达到重试上限时抛出 HTTPException
                     if retry_count > settings.MAX_RETRIES:
-                        # 达到最大重试次数，返回错误
-                        logger.error(f"❌ 达到最大重试次数 ({settings.MAX_RETRIES})，流处理失败")
-                        error_response = {
-                            "error": {
-                                "message": f"Stream processing failed after {settings.MAX_RETRIES} retries: {last_error}",
-                                "type": "stream_error"
+                        if is_connection_error or is_httpcore_error:
+                            logger.error(f"❌ 上游服务连接失败，重试次数已达上限")
+                            raise HTTPException(
+                                status_code=502,
+                                detail=f"Upstream service connection failed: {last_error}"
+                            )
+                        else:
+                            # 达到最大重试次数，返回错误
+                            logger.error(f"❌ 达到最大重试次数 ({settings.MAX_RETRIES})，流处理失败")
+                            error_response = {
+                                "error": {
+                                    "message": f"Stream processing failed after {settings.MAX_RETRIES} retries: {last_error}",
+                                    "type": "stream_error"
+                                }
                             }
-                        }
-                        yield f"data: {json.dumps(error_response)}\n\n"
-                        yield "data: [DONE]\n\n"
-                        return
+                            yield f"data: {json.dumps(error_response)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                    else:
+                        # 继续重试
+                        if is_connection_error or is_httpcore_error:
+                            logger.warning(f"⚠️ 连接错误，重试请求 ({retry_count}/{settings.MAX_RETRIES})")
+                        else:
+                            logger.warning(f"⚠️ 重试请求 ({retry_count}/{settings.MAX_RETRIES})")
+                        continue
 
         # 根据请求类型返回响应
         if request.stream:

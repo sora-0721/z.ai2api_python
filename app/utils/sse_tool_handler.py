@@ -204,6 +204,9 @@ class SSEToolHandler:
                 self.tool_name = metadata.get("name", "unknown")
                 self.has_tool_call = True
 
+                # 只有在这是第二个及以后的工具调用时才递增 index
+                # 第一个工具调用应该使用 index 0
+
                 # 从 metadata.arguments 获取参数起始部分（参考 zai.js 实现）
                 if "arguments" in metadata:
                     arguments_str = metadata["arguments"]
@@ -331,6 +334,23 @@ class SSEToolHandler:
             if not test_args.startswith("{"):
                 test_args = "{" + test_args
 
+            # 修复内部转义引号问题
+            # 处理类似 "filename:\"bilibili_homepage\"," 的情况
+            # 使用正则表达式进行更精确的替换
+            import re
+
+            # 模式1: 字段名后的转义引号 "key:\"value\"
+            # 将 "key:\"value\" 替换为 "key":"value"
+            pattern1 = r'(["\w]+):\\"([^"\\]*)\\"'
+            if re.search(pattern1, test_args):
+                test_args = re.sub(pattern1, r'\1:"\2"', test_args)
+                logger.debug(f"🔧 修复字段转义引号: {test_args}")
+
+            # 模式2: 处理剩余的转义引号
+            if '\\"' in test_args:
+                test_args = test_args.replace('\\"', '"')
+                logger.debug(f"🔧 修复剩余转义引号: {test_args}")
+
             # 修复引号配对（只在没有处理转义引号的情况下）
             quote_count = test_args.count('"')
             if quote_count % 2 != 0:
@@ -349,7 +369,7 @@ class SSEToolHandler:
             logger.debug(f"✅ 工具参数解析成功: {fixed_result}")
             return fixed_result
         except json.JSONDecodeError as e:
-            logger.warning(f"❌ 工具参数解析失败: {e}, 原始参数: {raw_args[:100]}..., 使用空参数")
+            logger.warning(f"❌ 工具参数解析失败: {e}, 原始参数: {raw_args[:1000]}, 使用空参数")
             return "{}"
 
     def _create_content_chunk(self, content: str) -> Dict[str, Any]:
@@ -444,7 +464,7 @@ class SSEToolHandler:
         self.tool_name = ""
         self.tool_args = ""
         self.has_tool_call = False
-        self.content_index = 0
+        # content_index 在单次对话中应该保持不变，只有在新的工具调用开始时才递增
 
     def _reset_all_state(self):
         """重置所有状态"""
@@ -452,4 +472,6 @@ class SSEToolHandler:
         self.current_phase = None
         self.tool_call_usage = {}
         self.content_buffer = {}
+        # content_index 重置为 0，为下一轮对话做准备
+        self.content_index = 0
         logger.debug("🔄 重置所有处理器状态")
