@@ -7,11 +7,11 @@ import asyncio
 from datetime import datetime
 from typing import List, Dict, Any
 from fastapi import APIRouter, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import httpx
 
 from app.core.config import settings
-from app.models.schemas import OpenAIRequest, Message, ModelsResponse, Model
+from app.models.schemas import OpenAIRequest, Message, ModelsResponse, Model, OpenAIResponse, Choice, Usage
 from app.utils.logger import get_logger
 from app.core.zai_transformer import ZAITransformer, generate_uuid
 from app.utils.sse_tool_handler import SSEToolHandler
@@ -23,6 +23,94 @@ router = APIRouter()
 
 # 全局转换器实例
 transformer = ZAITransformer()
+
+
+async def handle_non_stream_response(stream_response, request: OpenAIRequest, transformed: Dict[str, Any]) -> JSONResponse:
+    """处理非流式响应"""
+    logger.info("📄 开始处理非流式响应")
+
+    # 初始化工具处理器
+    tool_handler = None
+    has_tools = transformed["body"].get("tools") is not None
+
+    if has_tools:
+        tool_handler = SSEToolHandler(request.model)
+        logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个工具")
+
+    # 收集所有流式数据
+    full_content = []
+    async for chunk_data in stream_response():
+        # 解析chunk数据（去除SSE格式）
+        if chunk_data.startswith("data: "):
+            chunk_str = chunk_data[6:].strip()
+            if chunk_str and chunk_str != "[DONE]":
+                try:
+                    chunk = json.loads(chunk_str)
+
+                    # 如果是工具处理器的输出，跳过（我们会在最后处理）
+                    if "choices" in chunk and chunk["choices"]:
+                        choice = chunk["choices"][0]
+                        if "delta" in choice:
+                            delta = choice["delta"]
+
+                            # 收集普通内容
+                            if "content" in delta and delta["content"]:
+                                content = delta["content"]
+                                full_content.append(content)
+                                if tool_handler:
+                                    tool_handler.buffer_content(content)
+
+                            # 收集思考内容
+                            if "reasoning_content" in delta and delta["reasoning_content"]:
+                                content = delta["reasoning_content"]
+                                full_content.append(content)
+                                if tool_handler:
+                                    tool_handler.buffer_content(content)
+
+                except json.JSONDecodeError:
+                    continue
+
+    # 处理工具调用
+    final_content = "".join(full_content)
+    tool_calls = None
+    finish_reason = "stop"
+    message_content = final_content
+
+    if tool_handler:
+        # 提取工具调用
+        tool_calls = tool_handler.extract_tools_at_end()
+        if tool_calls:
+            # 根据OpenAI规范，有工具调用时content必须为null
+            message_content = None
+            finish_reason = "tool_calls"
+        else:
+            # 清理工具JSON内容
+            message_content = tool_handler.get_cleaned_content()
+
+    # 构建响应
+    response_data = OpenAIResponse(
+        id=f"chatcmpl-{int(time.time())}",
+        object="chat.completion",
+        created=int(time.time()),
+        model=request.model,
+        choices=[Choice(
+            index=0,
+            message=Message(
+                role="assistant",
+                content=message_content,
+                tool_calls=tool_calls
+            ),
+            finish_reason=finish_reason
+        )],
+        usage=Usage(
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0
+        )
+    )
+
+    logger.info("✅ 非流式响应处理完成")
+    return JSONResponse(content=response_data.model_dump(exclude_none=True))
 
 
 @router.get("/v1/models")
@@ -158,9 +246,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                             tool_handler = None
                             
                             if has_tools:
-                                chat_id = transformed["body"]["chat_id"]
-                                model = request.model
-                                tool_handler = SSEToolHandler(chat_id, model)
+                                tool_handler = SSEToolHandler(request.model)
                                 logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个工具")
                                 
                             # 处理状态
@@ -207,15 +293,99 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                                     logger.info(f"📈 SSE 阶段: {phase}")
                                                     stream_response._last_phase = phase
 
-                                                # 处理工具调用
+                                                # 处理工具调用阶段 - 缓冲内容
                                                 if phase == "tool_call" and tool_handler:
-                                                    for output in tool_handler.process_tool_call_phase(data, True):
-                                                        yield output
+                                                    content = data.get("delta_content", "") or data.get("edit_content", "")
+                                                    if content:
+                                                        tool_handler.buffer_content(content)
 
-                                                # 处理其他阶段（工具结束）
+                                                # 处理其他阶段 - 可能是工具调用结束
                                                 elif phase == "other" and tool_handler:
-                                                    for output in tool_handler.process_other_phase(data, True):
-                                                        yield output
+                                                    # 继续缓冲内容
+                                                    content = data.get("delta_content", "") or data.get("edit_content", "")
+                                                    if content:
+                                                        tool_handler.buffer_content(content)
+
+                                                    # 检查是否结束（有usage信息或done标志）
+                                                    if data.get("usage") or data.get("done"):
+                                                        logger.debug("🏁 检测到工具调用结束，开始提取工具")
+
+                                                        # 发送初始角色信息
+                                                        role_chunk = {
+                                                            "choices": [{
+                                                                "delta": {"role": "assistant"},
+                                                                "finish_reason": None,
+                                                                "index": 0
+                                                            }],
+                                                            "created": int(time.time()),
+                                                            "id": transformed["body"]["chat_id"],
+                                                            "model": request.model,
+                                                            "object": "chat.completion.chunk"
+                                                        }
+                                                        yield f"data: {json.dumps(role_chunk)}\n\n"
+
+                                                        # 提取工具调用
+                                                        tool_calls = tool_handler.extract_tools_at_end()
+
+                                                        if tool_calls:
+                                                            # 发送工具调用
+                                                            tool_calls_list = []
+                                                            for i, tc in enumerate(tool_calls):
+                                                                tool_calls_list.append({
+                                                                    "index": i,
+                                                                    "id": tc.get("id"),
+                                                                    "type": tc.get("type", "function"),
+                                                                    "function": tc.get("function", {}),
+                                                                })
+
+                                                            tool_chunk = {
+                                                                "choices": [{
+                                                                    "delta": {"tool_calls": tool_calls_list},
+                                                                    "finish_reason": None,
+                                                                    "index": 0
+                                                                }],
+                                                                "created": int(time.time()),
+                                                                "id": transformed["body"]["chat_id"],
+                                                                "model": request.model,
+                                                                "object": "chat.completion.chunk"
+                                                            }
+                                                            yield f"data: {json.dumps(tool_chunk)}\n\n"
+
+                                                            # 发送完成块
+                                                            finish_chunk = {
+                                                                "choices": [{
+                                                                    "delta": {},
+                                                                    "finish_reason": "tool_calls",
+                                                                    "index": 0
+                                                                }],
+                                                                "created": int(time.time()),
+                                                                "id": transformed["body"]["chat_id"],
+                                                                "model": request.model,
+                                                                "object": "chat.completion.chunk"
+                                                            }
+
+                                                            # 添加usage信息
+                                                            if data.get("usage"):
+                                                                finish_chunk["usage"] = data["usage"]
+
+                                                            yield f"data: {json.dumps(finish_chunk)}\n\n"
+                                                            yield "data: [DONE]\n\n"
+                                                        else:
+                                                            # 没有工具调用，发送清理后的内容
+                                                            cleaned_content = tool_handler.get_cleaned_content()
+                                                            if cleaned_content.strip():
+                                                                content_chunk = {
+                                                                    "choices": [{
+                                                                        "delta": {"content": cleaned_content},
+                                                                        "finish_reason": None,
+                                                                        "index": 0
+                                                                    }],
+                                                                    "created": int(time.time()),
+                                                                    "id": transformed["body"]["chat_id"],
+                                                                    "model": request.model,
+                                                                    "object": "chat.completion.chunk"
+                                                                }
+                                                                yield f"data: {json.dumps(content_chunk)}\n\n"
 
                                                 # 处理思考内容
                                                 elif phase == "thinking":
@@ -376,7 +546,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                                         logger.info(f"📦 完成响应 - 使用统计: {json.dumps(data['usage'])}")
 
                                                         # 只有在非工具调用模式下才发送普通完成信号
-                                                        if not tool_handler or not tool_handler.has_tool_call:
+                                                        if not tool_handler or not tool_handler.has_tools():
                                                             finish_chunk = {
                                                                 "choices": [
                                                                     {
@@ -405,7 +575,7 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                                             logger.error(f"❌ 处理chunk错误: {e}")
 
                             # 确保发送结束信号
-                            if not tool_handler or not tool_handler.has_tool_call:
+                            if not tool_handler or not tool_handler.has_tools():
                                 logger.debug("📤 发送最终 [DONE] 信号")
                                 yield "data: [DONE]\n\n"
 
@@ -439,31 +609,37 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                         yield "data: [DONE]\n\n"
                         return
 
-        # 返回流式响应
-        logger.info("🚀 启动 SSE 流式响应")
-        
-        # 创建一个包装的生成器来追踪数据流
-        async def logged_stream():
-            chunk_count = 0
-            try:
-                logger.debug("📤 开始向客户端流式传输数据...")
-                async for chunk in stream_response():
-                    chunk_count += 1
-                    logger.debug(f"📤 发送块[{chunk_count}]: {chunk[:1000]}..." if len(chunk) > 1000 else f"  📤 发送块[{chunk_count}]: {chunk}")
-                    yield chunk
-                logger.info(f"✅ 流式传输完成，共发送 {chunk_count} 个数据块")
-            except Exception as e:
-                logger.error(f"❌ 流式传输中断: {e}")
-                raise
-        
-        return StreamingResponse(
-            logged_stream(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
+        # 根据请求类型返回响应
+        if request.stream:
+            # 流式响应
+            logger.info("🚀 启动 SSE 流式响应")
+
+            # 创建一个包装的生成器来追踪数据流
+            async def logged_stream():
+                chunk_count = 0
+                try:
+                    logger.debug("📤 开始向客户端流式传输数据...")
+                    async for chunk in stream_response():
+                        chunk_count += 1
+                        logger.debug(f"📤 发送块[{chunk_count}]: {chunk[:1000]}..." if len(chunk) > 1000 else f"  📤 发送块[{chunk_count}]: {chunk}")
+                        yield chunk
+                    logger.info(f"✅ 流式传输完成，共发送 {chunk_count} 个数据块")
+                except Exception as e:
+                    logger.error(f"❌ 流式传输中断: {e}")
+                    raise
+
+            return StreamingResponse(
+                logged_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+        else:
+            # 非流式响应
+            logger.info("📄 处理非流式响应")
+            return await handle_non_stream_response(stream_response, request, transformed)
 
     except HTTPException:
         raise
