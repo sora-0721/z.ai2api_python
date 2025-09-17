@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     API_ENDPOINT: str = "https://chat.z.ai/api/chat/completions"
     AUTH_TOKEN: str = os.getenv("AUTH_TOKEN", "sk-your-api-key")
 
-    # 认证token文件路径
-    AUTH_TOKENS_FILE: str = os.getenv("AUTH_TOKENS_FILE", "tokens.txt")
+    # 认证token文件路径（可选）
+    AUTH_TOKENS_FILE: Optional[str] = os.getenv("AUTH_TOKENS_FILE")
 
     # Token池配置
     TOKEN_HEALTH_CHECK_INTERVAL: int = int(os.getenv("TOKEN_HEALTH_CHECK_INTERVAL", "300"))  # 5分钟
@@ -77,8 +77,13 @@ class Settings(BaseSettings):
         """
         解析认证token列表
 
-        仅从AUTH_TOKENS_FILE指定的文件加载token
+        从AUTH_TOKENS_FILE指定的文件加载token（如果配置了文件路径）
         """
+        # 如果未配置token文件路径，返回空列表
+        if not self.AUTH_TOKENS_FILE:
+            logger.debug("📄 未配置AUTH_TOKENS_FILE，跳过token文件加载")
+            return []
+
         # 从文件加载token
         tokens = self._load_tokens_from_file(self.AUTH_TOKENS_FILE)
 

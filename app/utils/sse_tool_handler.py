@@ -66,11 +66,14 @@ class SSEToolHandler:
 
     def _extract_and_send_tools(self) -> Generator[str, None, None]:
         """从缓冲区提取并发送工具调用"""
-        # 查找所有完整的 glm_block
-        pattern = r'<glm_block\s*>(.*?)</glm_block>'
+        # 修复正则表达式以匹配带属性的 glm_block 标签
+        pattern = r'<glm_block[^>]*>(.*?)</glm_block>'
         matches = re.findall(pattern, self.content_buffer, re.DOTALL)
 
-        for block_content in matches:
+        logger.debug(f"📦 在缓冲区中找到 {len(matches)} 个工具块")
+
+        for i, block_content in enumerate(matches):
+            logger.debug(f"📦 处理工具块 {i+1}: {block_content[:100]}...")
             yield from self._process_tool_block(block_content)
 
     def _process_tool_block(self, block_content: str) -> Generator[str, None, None]:
@@ -78,6 +81,8 @@ class SSEToolHandler:
         try:
             # 清理和修复 JSON 内容
             cleaned_content = self._clean_json_content(block_content)
+            logger.debug(f"📦 清理后的JSON内容: {cleaned_content[:200]}...")
+
             tool_data = json.loads(cleaned_content)
             metadata = tool_data.get("data", {}).get("metadata", {})
 
@@ -85,19 +90,16 @@ class SSEToolHandler:
             tool_name = metadata.get("name", "")
             arguments_str = metadata.get("arguments", "{}")
 
+            logger.debug(f"📦 提取工具信息: id={tool_id}, name={tool_name}")
+            logger.debug(f"📦 原始参数字符串: {arguments_str}")
+
             if not tool_id or not tool_name or tool_id in self.sent_tools:
+                logger.debug(f"📦 跳过工具: id={tool_id}, name={tool_name}, 已发送={tool_id in self.sent_tools}")
                 return
 
-            # 解析参数
-            try:
-                if isinstance(arguments_str, str):
-                    # 处理转义的 JSON 字符串
-                    cleaned_args = arguments_str.replace('\\"', '"')
-                    arguments = json.loads(cleaned_args)
-                else:
-                    arguments = arguments_str
-            except json.JSONDecodeError:
-                arguments = {}
+            # 智能解析参数
+            arguments = self._parse_tool_arguments(arguments_str)
+            logger.debug(f"📦 解析后的参数: {arguments}")
 
             # 发送工具调用
             logger.debug(f"🎯 发送工具调用: {tool_name}(id={tool_id})")
@@ -105,7 +107,7 @@ class SSEToolHandler:
             self.sent_tools.add(tool_id)
 
         except (json.JSONDecodeError, KeyError) as e:
-            logger.debug(f"📦 工具块解析失败: {e}")
+            logger.error(f"❌ 工具块解析失败: {e}, 内容: {block_content[:500]}...")
 
     def _clean_json_content(self, content: str) -> str:
         """清理 JSON 内容，处理常见的格式问题"""
@@ -144,6 +146,74 @@ class SSEToolHandler:
             except json.JSONDecodeError:
                 # 如果还是失败，返回原内容
                 return content
+
+    def _parse_tool_arguments(self, arguments_str: str) -> Dict[str, Any]:
+        """智能解析工具参数，处理复杂的转义和Unicode序列"""
+        if not arguments_str or arguments_str == "{}":
+            return {}
+
+        logger.debug(f"📦 开始解析参数: {arguments_str}")
+
+        # 方法1: 直接解析
+        try:
+            result = json.loads(arguments_str)
+            logger.debug(f"✅ 直接解析成功: {result}")
+            return result
+        except json.JSONDecodeError as e:
+            logger.debug(f"📦 直接解析失败: {e}")
+
+        # 方法2: 处理双重转义
+        try:
+            # 先处理 \\" -> "
+            step1 = arguments_str.replace('\\"', '"')
+            logger.debug(f"📦 第一步转义处理: {step1}")
+
+            result = json.loads(step1)
+            logger.debug(f"✅ 转义处理后解析成功: {result}")
+            return result
+        except json.JSONDecodeError as e:
+            logger.debug(f"📦 转义处理后解析失败: {e}")
+
+        # 方法3: 处理Unicode转义序列
+        try:
+            # 处理Unicode转义 \\uXXXX -> \uXXXX -> 实际字符
+            import codecs
+            step1 = arguments_str.replace('\\"', '"')
+            # 处理双重转义的Unicode序列
+            step2 = step1.replace('\\\\u', '\\u')
+            logger.debug(f"📦 Unicode处理: {step2}")
+
+            # 解码Unicode转义序列
+            step3 = codecs.decode(step2, 'unicode_escape')
+            logger.debug(f"📦 Unicode解码: {step3}")
+
+            result = json.loads(step3)
+            logger.debug(f"✅ Unicode处理后解析成功: {result}")
+            return result
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.debug(f"📦 Unicode处理失败: {e}")
+
+        # 方法4: 尝试修复截断的JSON
+        try:
+            # 检查是否是截断的数组
+            if arguments_str.endswith(', ""') or arguments_str.endswith(', "'):
+                # 移除末尾的不完整元素
+                fixed_str = re.sub(r',\s*"[^"]*$', '', arguments_str)
+                if not fixed_str.endswith(']'):
+                    fixed_str += ']'
+                if not fixed_str.endswith('}'):
+                    fixed_str += '}'
+
+                logger.debug(f"📦 修复截断JSON: {fixed_str}")
+                result = json.loads(fixed_str)
+                logger.debug(f"✅ 截断修复后解析成功: {result}")
+                return result
+        except json.JSONDecodeError as e:
+            logger.debug(f"📦 截断修复失败: {e}")
+
+        # 最后的降级方案
+        logger.warning(f"❌ 所有解析方法都失败，使用空参数: {arguments_str}")
+        return {}
 
 
 
