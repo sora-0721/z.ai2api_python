@@ -47,6 +47,7 @@ class SSEToolHandler:
         self.tool_name = ""
         self.tool_args = ""
         self.tool_call_usage = {}
+        self.content_index = 0  # 工具调用索引
 
         # 内容缓冲（简化版）
         self.content_buffer = {}
@@ -93,7 +94,7 @@ class SSEToolHandler:
                 yield from self._process_tool_call_phase(edit_content)
 
             elif phase == SSEPhase.OTHER.value:
-                yield from self._process_other_phase(usage)
+                yield from self._process_other_phase(usage, edit_content)
 
             elif phase == SSEPhase.ANSWER.value:
                 yield from self._process_answer_phase(edit_content)
@@ -127,26 +128,60 @@ class SSEToolHandler:
         # 检测 glm_block 标记
         if "<glm_block " in edit_content:
             yield from self._handle_glm_blocks(edit_content)
+        else:
+            # 没有 glm_block 标记，可能是参数补充
+            if self.has_tool_call:
+                # 只累积参数部分，找到第一个 ", "result"" 之前的内容
+                result_pos = edit_content.find('", "result"')
+                if result_pos > 0:
+                    param_fragment = edit_content[:result_pos]
+                    self.tool_args += param_fragment
+                    logger.debug(f"📦 累积参数片段: {param_fragment}")
+                else:
+                    # 如果没有找到结束标记，累积整个内容（可能是中间片段）
+                    self.tool_args += edit_content
+                    logger.debug(f"📦 累积参数片段: {edit_content[:100]}...")
 
     def _handle_glm_blocks(self, edit_content: str) -> Generator[str, None, None]:
-        """处理 glm_block 标记的内容"""
+        """处理 glm_block 标记的内容 - 基于 zai.js 正确实现"""
         blocks = edit_content.split('<glm_block ')
         logger.debug(f"📦 分割得到 {len(blocks)} 个块")
 
-        # 处理包含工具元数据的块（跳过第一个空块）
         for index, block in enumerate(blocks):
-            if not block.strip() or index == 0:
+            if not block.strip():
                 continue
-            yield from self._process_metadata_block(block)
+
+            if index == 0:
+                # 第一个块：提取参数片段（参考 zai.js 实现）
+                if self.has_tool_call:
+                    logger.debug(f"📦 从第一个块提取参数片段")
+                    # 找到 "result" 的位置，提取之前的参数片段
+                    result_pos = edit_content.find('"result"')
+                    if result_pos > 0:
+                        # 往前退3个字符去掉 ", "
+                        param_fragment = edit_content[:result_pos - 3]
+                        self.tool_args += param_fragment
+                        logger.debug(f"📦 累积参数片段: {param_fragment}")
+                else:
+                    # 没有活跃工具调用，跳过第一个块
+                    continue
+            else:
+                # 后续块：处理新工具调用
+                if "</glm_block>" not in block:
+                    continue
+
+                # 如果有活跃的工具调用，先完成它
+                if self.has_tool_call:
+                    # 补全参数并完成工具调用
+                    self.tool_args += '"'  # 补全最后的引号
+                    yield from self._finish_current_tool()
+
+                # 处理新工具调用
+                yield from self._process_metadata_block(block)
 
     def _process_metadata_block(self, block: str) -> Generator[str, None, None]:
         """处理包含工具元数据的块"""
         try:
-            # 查找 glm_block 的结束标记
-            if '</glm_block>' not in block:
-                logger.warning(f"❌ 块格式不正确，缺少结束标记: {block[:50]}...")
-                return
-
             # 提取 JSON 内容
             start_pos = block.find('>')
             end_pos = block.rfind('</glm_block>')
@@ -164,51 +199,38 @@ class SSEToolHandler:
             if "data" in metadata_obj and "metadata" in metadata_obj["data"]:
                 metadata = metadata_obj["data"]["metadata"]
 
-                # 如果已有工具调用，先完成它
-                if self.has_tool_call:
-                    yield from self._finish_current_tool()
-
                 # 开始新的工具调用
                 self.tool_id = metadata.get("id", f"call_{int(time.time() * 1000000)}")
                 self.tool_name = metadata.get("name", "unknown")
                 self.has_tool_call = True
 
-                # 从 metadata.arguments 获取完整参数
+                # 从 metadata.arguments 获取参数起始部分（参考 zai.js 实现）
                 if "arguments" in metadata:
                     arguments_str = metadata["arguments"]
-                    try:
-                        # 确保参数格式正确
-                        args_obj = json.loads(arguments_str)
-                        self.tool_args = json.dumps(args_obj, ensure_ascii=False)
-                        logger.debug(f"🎯 新工具调用: {self.tool_name}(id={self.tool_id}), 参数: {self.tool_args}")
-                    except json.JSONDecodeError:
-                        self.tool_args = arguments_str
-                        logger.debug(f"🎯 新工具调用: {self.tool_name}(id={self.tool_id}), 原始参数: {arguments_str}")
+                    # 参考 zai.js：去掉最后一个字符（通常是 "）
+                    self.tool_args = arguments_str[:-1] if arguments_str.endswith('"') else arguments_str
+                    logger.debug(f"🎯 新工具调用: {self.tool_name}(id={self.tool_id}), 初始参数: {self.tool_args}")
                 else:
                     self.tool_args = "{}"
                     logger.debug(f"🎯 新工具调用: {self.tool_name}(id={self.tool_id}), 空参数")
 
-                # 输出工具开始信号和参数
-                if self.stream:
-                    start_chunk = self._create_tool_start_chunk()
-                    yield f"data: {json.dumps(start_chunk, ensure_ascii=False)}\n\n"
-
-                    args_chunk = self._create_tool_arguments_chunk(self.tool_args)
-                    yield f"data: {json.dumps(args_chunk, ensure_ascii=False)}\n\n"
-
         except (json.JSONDecodeError, KeyError, AttributeError) as e:
             logger.error(f"❌ 解析工具元数据失败: {e}, 块内容: {block[:100]}...")
 
-    def _process_other_phase(self, usage: Dict[str, Any]) -> Generator[str, None, None]:
+        # 确保返回生成器（即使为空）
+        if False:  # 永远不会执行，但确保函数是生成器
+            yield
+
+    def _process_other_phase(self, usage: Dict[str, Any], edit_content: str = "") -> Generator[str, None, None]:
         """处理其他阶段"""
         # 保存使用统计信息
         if usage:
             self.tool_call_usage = usage
             logger.debug(f"📊 保存使用统计: {usage}")
 
-        # 工具调用完成判断：存在 usage 信息且有活跃的工具调用
-        if self.has_tool_call and usage:
-            logger.info(f"🏁 检测到工具调用完成（基于 usage 信息）")
+        # 工具调用完成判断：检测到 "null," 开头的 edit_content
+        if self.has_tool_call and edit_content and edit_content.startswith("null,"):
+            logger.info(f"🏁 检测到工具调用结束标记")
 
             # 完成当前工具调用
             yield from self._finish_current_tool()
@@ -237,16 +259,98 @@ class SSEToolHandler:
         if not self.has_tool_call:
             return
 
-        logger.debug(f"✅ 完成工具调用: {self.tool_name}, 参数: {self.tool_args}")
+        # 修复参数格式
+        fixed_args = self._fix_tool_arguments(self.tool_args)
+        logger.debug(f"✅ 完成工具调用: {self.tool_name}, 参数: {fixed_args}")
 
-        # 输出完成信号（参数已经在 metadata 解析时输出）
+        # 输出工具调用（开始 + 参数 + 完成）
         if self.stream:
+            # 发送工具开始块
+            start_chunk = self._create_tool_start_chunk()
+            yield f"data: {json.dumps(start_chunk, ensure_ascii=False)}\n\n"
+
+            # 发送参数块
+            args_chunk = self._create_tool_arguments_chunk(fixed_args)
+            yield f"data: {json.dumps(args_chunk, ensure_ascii=False)}\n\n"
+
             # 发送完成块
             finish_chunk = self._create_tool_finish_chunk()
             yield f"data: {json.dumps(finish_chunk, ensure_ascii=False)}\n\n"
 
         # 重置工具状态
         self._reset_tool_state()
+
+    def _fix_tool_arguments(self, raw_args: str) -> str:
+        """修复工具参数格式"""
+        if not raw_args or raw_args == "{}":
+            return "{}"
+
+        # 尝试直接解析
+        try:
+            args_obj = json.loads(raw_args)
+            return json.dumps(args_obj, ensure_ascii=False)
+        except json.JSONDecodeError:
+            pass
+
+        # 参数修复逻辑 - 只提取 JSON 参数部分
+        test_args = raw_args.strip()
+
+        # 如果包含额外内容，尝试提取纯 JSON 部分
+        if '"result"' in test_args:
+            # 找到第一个完整的 JSON 对象
+            brace_count = 0
+            json_end = -1
+            for i, char in enumerate(test_args):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_end = i + 1
+                        break
+
+            if json_end > 0:
+                test_args = test_args[:json_end]
+                logger.debug(f"🔧 提取纯 JSON 部分: {test_args}")
+
+        # 处理转义引号问题：将 \" 替换为 "
+        if test_args.endswith('\\"}"'):
+            # {"url":"https://bilibili.com\"}" → {"url":"https://bilibili.com"}
+            test_args = test_args[:-4] + '"}'
+            logger.debug(f"🔧 修复转义引号和多余括号: {test_args}")
+        elif test_args.endswith('\\"}'):
+            # {"url":"https://bilibili.com\"} → {"url":"https://bilibili.com"}
+            test_args = test_args[:-3] + '"}'
+            logger.debug(f"🔧 修复转义引号: {test_args}")
+        elif test_args.endswith('\\"'):
+            # {"url":"https://bilibili.com\" → {"url":"https://bilibili.com"}
+            test_args = test_args[:-2] + '"}'
+            logger.debug(f"🔧 补全结束括号: {test_args}")
+        else:
+            # 检查是否以 { 开头
+            if not test_args.startswith("{"):
+                test_args = "{" + test_args
+
+            # 修复引号配对（只在没有处理转义引号的情况下）
+            quote_count = test_args.count('"')
+            if quote_count % 2 != 0:
+                test_args += '"'
+                logger.debug(f"🔧 修复引号配对: {test_args}")
+
+            # 补全结束括号（只在没有处理转义引号的情况下）
+            if not test_args.endswith("}"):
+                test_args += "}"
+                logger.debug(f"🔧 补全结束括号: {test_args}")
+
+        # 再次尝试解析
+        try:
+            args_obj = json.loads(test_args)
+            fixed_result = json.dumps(args_obj, ensure_ascii=False)
+            logger.debug(f"✅ 工具参数解析成功: {fixed_result}")
+            return fixed_result
+        except json.JSONDecodeError as e:
+            logger.warning(f"❌ 工具参数解析失败: {e}, 原始参数: {raw_args[:100]}..., 使用空参数")
+            return "{}"
 
     def _create_content_chunk(self, content: str) -> Dict[str, Any]:
         """创建内容块"""
@@ -277,6 +381,7 @@ class SSEToolHandler:
                 "delta": {
                     "role": "assistant",
                     "tool_calls": [{
+                        "index": self.content_index,
                         "id": self.tool_id,
                         "type": "function",
                         "function": {
@@ -300,6 +405,7 @@ class SSEToolHandler:
                 "index": 0,
                 "delta": {
                     "tool_calls": [{
+                        "index": self.content_index,
                         "id": self.tool_id,
                         "function": {
                             "arguments": arguments
@@ -338,6 +444,7 @@ class SSEToolHandler:
         self.tool_name = ""
         self.tool_args = ""
         self.has_tool_call = False
+        self.content_index = 0
 
     def _reset_all_state(self):
         """重置所有状态"""
