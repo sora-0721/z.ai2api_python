@@ -3,11 +3,8 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python: 3.9-3.12](https://img.shields.io/badge/python-3.9--3.12-green.svg)
 ![FastAPI](https://img.shields.io/badge/framework-FastAPI-009688.svg)
-![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-brightgreen.svg)
 
-> 🎯 **项目愿景**：提供完全兼容 OpenAI API 的多提供商代理服务，支持 Z.AI、K2Think、LongCat 等多个 AI 提供商，让用户无需修改现有代码即可接入多种先进的 AI 模型。
-
-轻量级、高性能的 OpenAI API 兼容代理服务，采用多提供商架构设计，支持 GLM-4.5 系列、K2Think、LongCat 等多种 AI 模型的完整功能。
+基于 FastAPI 的高性能 OpenAI API 兼容代理服务，采用多提供商架构设计，支持 GLM-4.5 系列、K2Think、LongCat 等多种 AI 模型的完整功能。
 
 ## ✨ 核心特性
 
