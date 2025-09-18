@@ -30,9 +30,7 @@ class ProviderFactory:
         """初始化所有提供商"""
         if self._initialized:
             return
-        
-        logger.info("🏭 初始化提供商工厂...")
-        
+
         try:
             # 注册 Z.AI 提供商
             zai_provider = ZAIProvider()
@@ -56,9 +54,6 @@ class ProviderFactory:
             )
             
             self._initialized = True
-            logger.info("✅ 提供商工厂初始化完成")
-            logger.info(f"📋 支持的模型: {provider_registry.list_models()}")
-            logger.info(f"🔧 注册的提供商: {provider_registry.list_providers()}")
             
         except Exception as e:
             logger.error(f"❌ 提供商工厂初始化失败: {e}")

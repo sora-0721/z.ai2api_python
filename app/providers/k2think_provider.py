@@ -3,7 +3,6 @@
 
 """
 K2Think 提供商适配器
-基于 backup/cof.js 中的 K2Think 逻辑实现
 """
 
 import json

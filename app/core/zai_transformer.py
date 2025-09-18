@@ -9,47 +9,31 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional, Generator, AsyncGenerator
 import httpx
 import asyncio
-from fake_useragent import UserAgent
 
 from app.core.config import settings
 from app.utils.logger import get_logger
 from app.utils.token_pool import get_token_pool, initialize_token_pool
+from app.utils.user_agent import get_random_user_agent
 
 logger = get_logger()
 
-# 全局 UserAgent 实例（单例模式）
-_user_agent_instance = None
 
+def get_zai_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
+    """
+    生成 Z.AI 特定的动态浏览器 headers，包含随机 User-Agent
+    使用通用的 UserAgent 工具，但添加 Z.AI 特定的业务逻辑
 
-def get_user_agent_instance() -> UserAgent:
-    """获取或创建 UserAgent 实例（单例模式）"""
-    global _user_agent_instance
-    if _user_agent_instance is None:
-        _user_agent_instance = UserAgent()
-    return _user_agent_instance
+    Args:
+        chat_id: 聊天 ID，用于生成正确的 Referer
 
-
-def get_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
-    """生成动态浏览器headers，包含随机User-Agent"""
-    ua = get_user_agent_instance()
-
+    Returns:
+        Dict[str, str]: 包含 Z.AI 特定配置的 headers
+    """
     # 随机选择浏览器类型，偏向Chrome和Edge
     browser_choices = ["chrome", "chrome", "chrome", "edge", "edge", "firefox", "safari"]
     browser_type = random.choice(browser_choices)
 
-    try:
-        if browser_type == "chrome":
-            user_agent = ua.chrome
-        elif browser_type == "edge":
-            user_agent = ua.edge
-        elif browser_type == "firefox":
-            user_agent = ua.firefox
-        elif browser_type == "safari":
-            user_agent = ua.safari
-        else:
-            user_agent = ua.random
-    except:
-        user_agent = ua.random
+    user_agent = get_random_user_agent(browser_type)
 
     # 提取版本信息
     chrome_version = "139"
@@ -72,6 +56,7 @@ def get_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
     else:
         sec_ch_ua = f'"Not_A Brand";v="8", "Chromium";v="{chrome_version}", "Google Chrome";v="{chrome_version}"'
 
+    # Z.AI 特定的 headers
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
@@ -81,17 +66,20 @@ def get_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
         "Origin": "https://chat.z.ai",
     }
 
+    # 添加浏览器特定的 sec-ch-ua headers
     if sec_ch_ua:
         headers["sec-ch-ua"] = sec_ch_ua
         headers["sec-ch-ua-mobile"] = "?0"
         headers["sec-ch-ua-platform"] = '"Windows"'
 
+    # 根据 chat_id 设置 Referer
     if chat_id:
         headers["Referer"] = f"https://chat.z.ai/c/{chat_id}"
     else:
         headers["Referer"] = "https://chat.z.ai/"
 
     return headers
+
 
 
 def generate_uuid() -> str:
@@ -104,7 +92,7 @@ def get_auth_token_sync() -> str:
     # 如果启用匿名模式，只尝试获取访客令牌
     if settings.ANONYMOUS_MODE:
         try:
-            headers = get_dynamic_headers()
+            headers = get_zai_dynamic_headers()
             with httpx.Client() as client:
                 response = client.get("https://chat.z.ai/api/v1/auths/", headers=headers, timeout=10.0)
                 if response.status_code == 200:
@@ -131,7 +119,7 @@ def get_auth_token_sync() -> str:
     # 如果没有备份token，尝试降级到匿名模式
     logger.warning("⚠️ 没有可用的备份token，尝试降级到匿名模式...")
     try:
-        headers = get_dynamic_headers()
+        headers = get_zai_dynamic_headers()
         with httpx.Client() as client:
             response = client.get("https://chat.z.ai/api/v1/auths/", headers=headers, timeout=10.0)
             if response.status_code == 200:
@@ -171,7 +159,7 @@ class ZAITransformer:
         # 如果启用匿名模式，只尝试获取访客令牌
         if settings.ANONYMOUS_MODE:
             try:
-                headers = get_dynamic_headers()
+                headers = get_zai_dynamic_headers()
                 async with httpx.AsyncClient() as client:
                     response = await client.get(self.auth_url, headers=headers, timeout=10.0)
                     if response.status_code == 200:
@@ -198,7 +186,7 @@ class ZAITransformer:
         # 如果没有备份token，尝试降级到匿名模式
         logger.warning("⚠️ 没有可用的备份token，尝试降级到匿名模式...")
         try:
-            headers = get_dynamic_headers()
+            headers = get_zai_dynamic_headers()
             async with httpx.AsyncClient() as client:
                 response = await client.get(self.auth_url, headers=headers, timeout=10.0)
                 if response.status_code == 200:
@@ -322,7 +310,7 @@ class ZAITransformer:
             logger.debug(f"  非搜索模型，不添加 MCP 服务器")
 
         logger.debug(f"  MCP服务器列表: {mcp_servers}")
-            
+
         # 构建上游请求体
         chat_id = generate_uuid()
 
@@ -372,7 +360,7 @@ class ZAITransformer:
             body["tools"] = None
 
         # 构建请求配置
-        dynamic_headers = get_dynamic_headers(chat_id)
+        dynamic_headers = get_zai_dynamic_headers(chat_id)
 
         config = {
             "url": self.api_url,  # 使用原始URL

@@ -10,14 +10,22 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from app.core.config import settings
 from app.models.schemas import OpenAIRequest, Message, ModelsResponse, Model, OpenAIResponse, Choice, Usage
 from app.utils.logger import get_logger
-from app.providers import initialize_providers
+from app.providers import get_provider_router
 from app.utils.token_pool import get_token_pool
 
 logger = get_logger()
 router = APIRouter()
 
-# 初始化多提供商系统
-provider_router = initialize_providers()
+# 全局提供商路由器实例
+provider_router = None
+
+
+def get_provider_router_instance():
+    """获取提供商路由器实例"""
+    global provider_router
+    if provider_router is None:
+        provider_router = get_provider_router()
+    return provider_router
 
 
 def create_chunk(chat_id: str, model: str, delta: Dict[str, Any], finish_reason: str = None) -> Dict[str, Any]:
@@ -88,7 +96,8 @@ async def handle_non_stream_response(stream_response, request: OpenAIRequest) ->
 async def list_models():
     """List available models from all providers"""
     try:
-        models_data = provider_router.get_models_list()
+        router_instance = get_provider_router_instance()
+        models_data = router_instance.get_models_list()
         return JSONResponse(content=models_data)
     except Exception as e:
         logger.error(f"❌ 获取模型列表失败: {e}")
@@ -122,7 +131,8 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                 raise HTTPException(status_code=401, detail="Invalid API key")
 
         # 使用多提供商路由器处理请求
-        result = await provider_router.route_request(request)
+        router_instance = get_provider_router_instance()
+        result = await router_instance.route_request(request)
 
         # 检查是否有错误
         if isinstance(result, dict) and "error" in result:

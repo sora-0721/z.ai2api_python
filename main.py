@@ -14,6 +14,7 @@ from app.utils.reload_config import RELOAD_CONFIG
 from app.utils.logger import setup_logger
 from app.utils.token_pool import initialize_token_pool
 from app.utils.process_manager import ensure_service_uniqueness
+from app.providers import initialize_providers
 
 from granian import Granian
 
@@ -24,6 +25,10 @@ logger = setup_logger(log_dir="logs", debug_mode=settings.DEBUG_LOGGING)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 初始化提供商系统
+    initialize_providers()
+
+    # 初始化 token 池
     token_list = settings.auth_token_list
     if token_list:
         token_pool = initialize_token_pool(
@@ -85,7 +90,7 @@ def run_server():
             port=settings.LISTEN_PORT,
             reload=False,  # 生产环境请关闭热重载
             process_name=service_name,  # 设置进程名称
-            **RELOAD_CONFIG,
+            **RELOAD_CONFIG,    # 热重载配置
         ).serve()
     except KeyboardInterrupt:
         logger.info("🛑 收到中断信号，正在关闭服务...")

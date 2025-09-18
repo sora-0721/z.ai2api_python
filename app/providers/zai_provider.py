@@ -18,10 +18,7 @@ from app.models.schemas import OpenAIRequest, Message
 from app.core.config import settings
 from app.utils.logger import get_logger
 from app.utils.token_pool import get_token_pool
-from app.core.zai_transformer import (
-    get_dynamic_headers,
-    generate_uuid
-)
+from app.core.zai_transformer import generate_uuid, get_zai_dynamic_headers
 from app.utils.sse_tool_handler import SSEToolHandler
 
 logger = get_logger()
@@ -35,7 +32,7 @@ class ZAIProvider(BaseProvider):
             name="zai",
             api_endpoint=settings.API_ENDPOINT,
             timeout=30,
-            headers=get_dynamic_headers()
+            headers=get_zai_dynamic_headers()
         )
         super().__init__(config)
         
@@ -65,7 +62,7 @@ class ZAIProvider(BaseProvider):
         # 如果启用匿名模式，只尝试获取访客令牌
         if settings.ANONYMOUS_MODE:
             try:
-                headers = get_dynamic_headers()
+                headers = get_zai_dynamic_headers()
                 async with httpx.AsyncClient() as client:
                     response = await client.get(self.auth_url, headers=headers, timeout=10.0)
                     if response.status_code == 200:
@@ -202,7 +199,7 @@ class ZAIProvider(BaseProvider):
             body["params"]["max_tokens"] = request.max_tokens
         
         # 构建请求头
-        headers = get_dynamic_headers(chat_id)
+        headers = get_zai_dynamic_headers(chat_id)
         if token:
             headers["Authorization"] = f"Bearer {token}"
         
