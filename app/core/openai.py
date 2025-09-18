@@ -3,22 +3,21 @@
 
 import time
 import json
-import asyncio
 from typing import List, Dict, Any
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
-import httpx
 
 from app.core.config import settings
 from app.models.schemas import OpenAIRequest, Message, ModelsResponse, Model, OpenAIResponse, Choice, Usage
 from app.utils.logger import get_logger
-from app.core.zai_transformer import ZAITransformer
-from app.utils.sse_tool_handler import SSEToolHandler
+from app.providers import initialize_providers
 from app.utils.token_pool import get_token_pool
 
 logger = get_logger()
 router = APIRouter()
-transformer = ZAITransformer()
+
+# 初始化多提供商系统
+provider_router = initialize_providers()
 
 
 def create_chunk(chat_id: str, model: str, delta: Dict[str, Any], finish_reason: str = None) -> Dict[str, Any]:
@@ -87,24 +86,30 @@ async def handle_non_stream_response(stream_response, request: OpenAIRequest) ->
 
 @router.get("/v1/models")
 async def list_models():
-    """List available models"""
-    current_time = int(time.time())
-    response = ModelsResponse(
-        data=[
-            Model(id=settings.PRIMARY_MODEL, created=current_time, owned_by="z.ai"),
-            Model(id=settings.THINKING_MODEL, created=current_time, owned_by="z.ai"),
-            Model(id=settings.SEARCH_MODEL, created=current_time, owned_by="z.ai"),
-            Model(id=settings.AIR_MODEL, created=current_time, owned_by="z.ai"),
-        ]
-    )
-    return response
+    """List available models from all providers"""
+    try:
+        models_data = provider_router.get_models_list()
+        return JSONResponse(content=models_data)
+    except Exception as e:
+        logger.error(f"❌ 获取模型列表失败: {e}")
+        # 返回默认模型列表作为后备
+        current_time = int(time.time())
+        fallback_response = ModelsResponse(
+            data=[
+                Model(id=settings.PRIMARY_MODEL, created=current_time, owned_by="z.ai"),
+                Model(id=settings.THINKING_MODEL, created=current_time, owned_by="z.ai"),
+                Model(id=settings.SEARCH_MODEL, created=current_time, owned_by="z.ai"),
+                Model(id=settings.AIR_MODEL, created=current_time, owned_by="z.ai"),
+            ]
+        )
+        return fallback_response
 
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: OpenAIRequest, authorization: str = Header(...)):
-    """Handle chat completion requests with ZAI transformer"""
+    """Handle chat completion requests with multi-provider architecture"""
     role = request.messages[0].role if request.messages else "unknown"
-    logger.info(f"😶‍🌫️ 收到 客户端 请求 - 模型: {request.model}, 流式: {request.stream}, 消息数: {len(request.messages)}, 角色: {role}, 工具数: {len(request.tools) if request.tools else 0}")
+    logger.info(f"😶‍🌫️ 收到客户端请求 - 模型: {request.model}, 流式: {request.stream}, 消息数: {len(request.messages)}, 角色: {role}, 工具数: {len(request.tools) if request.tools else 0}")
 
     try:
         # Validate API key (skip if SKIP_AUTH_TOKEN is enabled)
@@ -116,395 +121,51 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
             if api_key != settings.AUTH_TOKEN:
                 raise HTTPException(status_code=401, detail="Invalid API key")
 
-        # 使用新的转换器转换请求
-        request_dict = request.model_dump()
-        
-        transformed = await transformer.transform_request_in(request_dict)
-        # logger.debug(f"🔄 转换后 Z.AI 请求体: {json.dumps(transformed['body'], ensure_ascii=False, indent=2)}")
+        # 使用多提供商路由器处理请求
+        result = await provider_router.route_request(request)
 
-        # 调用上游API
-        async def stream_response():
-            """流式响应生成器（包含重试机制）"""
-            retry_count = 0
-            last_error = None
-            current_token = transformed.get("token", "")  # 获取当前使用的token
+        # 检查是否有错误
+        if isinstance(result, dict) and "error" in result:
+            error_info = result["error"]
+            if error_info.get("code") == "model_not_found":
+                raise HTTPException(status_code=404, detail=error_info["message"])
+            else:
+                raise HTTPException(status_code=500, detail=error_info["message"])
 
-            while retry_count <= settings.MAX_RETRIES:
-                try:
-                    # 如果是重试，重新获取令牌并更新请求
-                    if retry_count > 0:
-                        delay = settings.RETRY_DELAY
-                        logger.warning(f"重试请求 ({retry_count}/{settings.MAX_RETRIES}) - 等待 {delay:.1f}s")
-                        await asyncio.sleep(delay)
-
-                        # 标记前一个token失败（如果不是匿名模式）
-                        if current_token and not settings.ANONYMOUS_MODE:
-                            transformer.mark_token_failure(current_token, Exception(f"Retry {retry_count}: {last_error}"))
-
-                        # 重新获取令牌
-                        logger.info("🔑 重新获取令牌用于重试...")
-                        new_token = await transformer.get_token()
-                        if not new_token:
-                            logger.error("❌ 重试时无法获取有效的认证令牌")
-                            raise Exception("重试时无法获取有效的认证令牌")
-                        transformed["config"]["headers"]["Authorization"] = f"Bearer {new_token}"
-                        current_token = new_token
-
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        # 发送请求到上游
-                        logger.info(f"🎯 发送请求到 Z.AI: {transformed['config']['url']}")
-                        async with client.stream(
-                            "POST",
-                            transformed["config"]["url"],
-                            json=transformed["body"],
-                            headers=transformed["config"]["headers"],
-                        ) as response:
-                            # 检查响应状态码
-                            if response.status_code == 400:
-                                # 400 错误，触发重试
-                                error_text = await response.aread()
-                                error_msg = error_text.decode('utf-8', errors='ignore')
-                                logger.warning(f"❌ 上游返回 400 错误 (尝试 {retry_count + 1}/{settings.MAX_RETRIES + 1})")
-
-                                retry_count += 1
-                                last_error = f"400 Bad Request: {error_msg}"
-
-                                # 如果还有重试机会，继续循环
-                                if retry_count <= settings.MAX_RETRIES:
-                                    continue
-                                else:
-                                    # 达到最大重试次数，抛出错误
-                                    logger.error(f"❌ 达到最大重试次数 ({settings.MAX_RETRIES})，请求失败")
-                                    error_response = {
-                                        "error": {
-                                            "message": f"Request failed after {settings.MAX_RETRIES} retries: {last_error}",
-                                            "type": "upstream_error",
-                                            "code": 400
-                                        }
-                                    }
-                                    yield f"data: {json.dumps(error_response)}\n\n"
-                                    yield "data: [DONE]\n\n"
-                                    return
-
-                            elif response.status_code != 200:
-                                # 其他错误，根据状态码决定处理方式
-                                logger.error(f"❌ 上游返回错误: {response.status_code}")
-                                error_text = await response.aread()
-                                error_msg = error_text.decode('utf-8', errors='ignore')
-                                logger.error(f"❌ 错误详情: {error_msg}")
-
-                                # 对于5xx错误，抛出HTTPException
-                                if 500 <= response.status_code < 600:
-                                    if response.status_code == 502:
-                                        raise HTTPException(
-                                            status_code=502,
-                                            detail=f"Upstream service unavailable: {error_msg[:200]}"
-                                        )
-                                    elif response.status_code == 503:
-                                        raise HTTPException(
-                                            status_code=503,
-                                            detail=f"Upstream service temporarily unavailable: {error_msg[:200]}"
-                                        )
-                                    elif response.status_code == 504:
-                                        raise HTTPException(
-                                            status_code=504,
-                                            detail=f"Upstream service timeout: {error_msg[:200]}"
-                                        )
-                                    else:
-                                        raise HTTPException(
-                                            status_code=502,
-                                            detail=f"Upstream server error ({response.status_code}): {error_msg[:200]}"
-                                        )
-
-                                # 对于4xx错误，返回错误响应而不是抛出异常
-                                error_response = {
-                                    "error": {
-                                        "message": f"Upstream error: {response.status_code}",
-                                        "type": "upstream_error",
-                                        "code": response.status_code
-                                    }
-                                }
-                                yield f"data: {json.dumps(error_response)}\n\n"
-                                yield "data: [DONE]\n\n"
-                                return
-
-                            # 200 成功，处理响应
-                            logger.info(f"✅ Z.AI 响应成功，开始处理 SSE 流")
-                            if retry_count > 0:
-                                logger.info(f"✨ 第 {retry_count} 次重试成功")
-
-                            # 标记token使用成功（如果不是匿名模式）
-                            if current_token and not settings.ANONYMOUS_MODE:
-                                transformer.mark_token_success(current_token)
-
-                            # 初始化工具处理器（如果需要）
-                            has_tools = transformed["body"].get("tools") is not None
-                            tool_handler = None
-
-                            if has_tools:
-                                tool_handler = SSEToolHandler(request.model, stream=True)
-                                logger.info(f"🔧 初始化工具处理器: {len(transformed['body'].get('tools', []))} 个工具")
-                                
-                            # 处理状态
-                            has_thinking = False
-                            thinking_signature = None
-
-                            # 处理SSE流
-                            buffer = ""
-                            line_count = 0
-                            logger.debug("📡 开始接收 SSE 流数据...")
-
-                            async for line in response.aiter_lines():
-                                line_count += 1
-                                if not line:
-                                    continue
-
-                                # 累积到buffer处理完整的数据行
-                                buffer += line + "\n"
-
-                                # 检查是否有完整的data行
-                                while "\n" in buffer:
-                                    current_line, buffer = buffer.split("\n", 1)
-                                    if not current_line.strip():
-                                        continue
-
-                                    if current_line.startswith("data:"):
-                                        chunk_str = current_line[5:].strip()
-                                        if not chunk_str or chunk_str == "[DONE]":
-                                            if chunk_str == "[DONE]":
-                                                yield "data: [DONE]\n\n"
-                                            continue
-
-                                        logger.debug(f"📦 解析数据块: {chunk_str[:1000]}..." if len(chunk_str) > 1000 else f"📦 解析数据块: {chunk_str}")
-
-                                        try:
-                                            chunk = json.loads(chunk_str)
-
-                                            if chunk.get("type") == "chat:completion":
-                                                data = chunk.get("data", {})
-                                                phase = data.get("phase")
-
-                                                # 记录每个阶段（只在阶段变化时记录）
-                                                if phase and phase != getattr(stream_response, '_last_phase', None):
-                                                    logger.info(f"📈 SSE 阶段: {phase}")
-                                                    stream_response._last_phase = phase
-
-                                                # 使用新的工具处理器处理所有阶段
-                                                if tool_handler:
-                                                    # 构建 SSE 数据块，包含所有必要字段
-                                                    sse_chunk = {
-                                                        "phase": phase,
-                                                        "edit_content": data.get("edit_content", ""),
-                                                        "delta_content": data.get("delta_content", ""),
-                                                        "edit_index": data.get("edit_index"),
-                                                        "usage": data.get("usage", {})
-                                                    }
-
-                                                    # 处理工具调用并输出结果
-                                                    for output in tool_handler.process_sse_chunk(sse_chunk):
-                                                        yield output
-
-                                                # 非工具调用模式 - 处理思考内容
-                                                elif phase == "thinking":
-                                                    if not has_thinking:
-                                                        has_thinking = True
-                                                        # 发送初始角色
-                                                        role_chunk = create_chunk(
-                                                            transformed["body"]["chat_id"],
-                                                            request.model,
-                                                            {"role": "assistant"}
-                                                        )
-                                                        yield f"data: {json.dumps(role_chunk)}\n\n"
-
-                                                    delta_content = data.get("delta_content", "")
-                                                    if delta_content:
-                                                        # 处理思考内容格式
-                                                        if delta_content.startswith("<details"):
-                                                            content = (
-                                                                delta_content.split("</summary>\n>")[-1].strip()
-                                                                if "</summary>\n>" in delta_content
-                                                                else delta_content
-                                                            )
-                                                        else:
-                                                            content = delta_content
-
-                                                        thinking_chunk = create_chunk(
-                                                            transformed["body"]["chat_id"],
-                                                            request.model,
-                                                            {
-                                                                "role": "assistant",
-                                                                "thinking": {"content": content}
-                                                            }
-                                                        )
-                                                        yield f"data: {json.dumps(thinking_chunk)}\n\n"
-
-                                                # 处理答案内容
-                                                elif phase == "answer":
-                                                    edit_content = data.get("edit_content", "")
-                                                    delta_content = data.get("delta_content", "")
-
-                                                    # 处理思考结束和答案开始
-                                                    if edit_content and "</details>\n" in edit_content:
-                                                        if has_thinking:
-                                                            # 发送思考签名
-                                                            thinking_signature = str(int(time.time() * 1000))
-                                                            sig_chunk = create_chunk(
-                                                                transformed["body"]["chat_id"],
-                                                                request.model,
-                                                                {
-                                                                    "role": "assistant",
-                                                                    "thinking": {
-                                                                        "content": "",
-                                                                        "signature": thinking_signature,
-                                                                    }
-                                                                }
-                                                            )
-                                                            yield f"data: {json.dumps(sig_chunk)}\n\n"
-
-                                                        # 提取答案内容
-                                                        content_after = edit_content.split("</details>\n")[-1]
-                                                        if content_after:
-                                                            content_chunk = create_chunk(
-                                                                transformed["body"]["chat_id"],
-                                                                request.model,
-                                                                {
-                                                                    "role": "assistant",
-                                                                    "content": content_after
-                                                                }
-                                                            )
-                                                            yield f"data: {json.dumps(content_chunk)}\n\n"
-
-                                                    # 处理增量内容
-                                                    elif delta_content:
-                                                        # 如果还没有发送角色
-                                                        if not has_thinking:
-                                                            role_chunk = create_chunk(
-                                                                transformed["body"]["chat_id"],
-                                                                request.model,
-                                                                {"role": "assistant"}
-                                                            )
-                                                            yield f"data: {json.dumps(role_chunk)}\n\n"
-
-                                                        content_chunk = create_chunk(
-                                                            transformed["body"]["chat_id"],
-                                                            request.model,
-                                                            {
-                                                                "role": "assistant",
-                                                                "content": delta_content
-                                                            }
-                                                        )
-                                                        output_data = f"data: {json.dumps(content_chunk)}\n\n"
-                                                        logger.debug(f"➡️ 输出内容块到客户端: {output_data}")
-                                                        yield output_data
-
-                                                    # 处理完成
-                                                    if data.get("usage"):
-                                                        logger.info(f"📦 完成响应 - 使用统计: {json.dumps(data['usage'])}")
-
-                                                        # 只有在非工具调用模式下才发送普通完成信号
-                                                        if not tool_handler:
-                                                            finish_chunk = create_chunk(
-                                                                transformed["body"]["chat_id"],
-                                                                request.model,
-                                                                {"role": "assistant", "content": ""},
-                                                                "stop"
-                                                            )
-                                                            finish_chunk["usage"] = data["usage"]
-
-                                                            finish_output = f"data: {json.dumps(finish_chunk)}\n\n"
-                                                            logger.debug(f"➡️ 发送完成信号: {finish_output[:1000]}...")
-                                                            yield finish_output
-                                                            logger.debug("➡️ 发送 [DONE]")
-                                                            yield "data: [DONE]\n\n"
-
-                                        except json.JSONDecodeError as e:
-                                            logger.debug(f"❌ JSON解析错误: {e}, 内容: {chunk_str[:1000]}")
-                                        except Exception as e:
-                                            logger.error(f"❌ 处理chunk错误: {e}")
-
-                            # 工具处理器会自动发送结束信号，这里不需要重复发送
-                            if not tool_handler:
-                                logger.debug("📤 发送最终 [DONE] 信号")
-                                yield "data: [DONE]\n\n"
-
-                            logger.info(f"✅ SSE 流处理完成，共处理 {line_count} 行数据")
-                            # 成功处理完成，退出重试循环
-                            return
-
-                except Exception as e:
-                    logger.error(f"❌ 流处理错误: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-
-                    # 检查是否是网络连接错误
-                    error_str = str(e).lower()
-                    is_connection_error = any(keyword in error_str for keyword in [
-                        'server disconnected', 'connection closed', 'connection reset',
-                        'timeout', 'connection error', 'network error'
-                    ])
-
-                    # 检查是否是特定的 httpcore 错误
-                    is_httpcore_error = 'httpcore' in str(type(e)) or 'RemoteProtocolError' in str(type(e))
-
-                    # 标记token失败（如果不是匿名模式）
-                    if current_token and not settings.ANONYMOUS_MODE:
-                        transformer.mark_token_failure(current_token, e)
-
-                    # 检查是否还可以重试
-                    retry_count += 1
-                    last_error = str(e)
-
-                    # 对于严重的连接错误，在达到重试上限时抛出 HTTPException
-                    if retry_count > settings.MAX_RETRIES:
-                        if is_connection_error or is_httpcore_error:
-                            logger.error(f"❌ 上游服务连接失败，重试次数已达上限")
-                            raise HTTPException(
-                                status_code=502,
-                                detail=f"Upstream service connection failed: {last_error}"
-                            )
-                        else:
-                            # 达到最大重试次数，返回错误
-                            logger.error(f"❌ 达到最大重试次数 ({settings.MAX_RETRIES})，流处理失败")
-                            error_response = {
-                                "error": {
-                                    "message": f"Stream processing failed after {settings.MAX_RETRIES} retries: {last_error}",
-                                    "type": "stream_error"
-                                }
-                            }
-                            yield f"data: {json.dumps(error_response)}\n\n"
-                            yield "data: [DONE]\n\n"
-                            return
-                    else:
-                        # 继续重试
-                        if is_connection_error or is_httpcore_error:
-                            logger.warning(f"⚠️ 连接错误，重试请求 ({retry_count}/{settings.MAX_RETRIES})")
-                        else:
-                            logger.warning(f"⚠️ 重试请求 ({retry_count}/{settings.MAX_RETRIES})")
-                        continue
-
-        # 根据请求类型返回响应
+        # 处理响应
         if request.stream:
-            logger.info("🚀 启动 SSE 流式响应")
-            return StreamingResponse(
-                stream_response(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
-            )
+            # 流式响应
+            if hasattr(result, '__aiter__'):
+                # 结果是异步生成器
+                return StreamingResponse(
+                    result,
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "Access-Control-Allow-Origin": "*",
+                    }
+                )
+            else:
+                # 结果是字典，可能包含错误
+                raise HTTPException(status_code=500, detail="Expected streaming response but got non-streaming result")
         else:
-            logger.info("📄 处理非流式响应")
-            return await handle_non_stream_response(stream_response, request)
+            # 非流式响应
+            if isinstance(result, dict):
+                return JSONResponse(content=result)
+            else:
+                # 如果是异步生成器，需要收集所有内容
+                return await handle_non_stream_response(result, request)
 
     except HTTPException:
+        # 重新抛出 HTTP 异常
         raise
     except Exception as e:
-        logger.error(f"❌ 处理请求时发生错误: {str(e)}")
-        import traceback
-
-        logger.error(f"❌ 错误堆栈: {traceback.format_exc()}")
+        logger.error(f"❌ 请求处理失败: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+# Token pool management endpoints
 
 
 @router.get("/v1/token-pool/status")
