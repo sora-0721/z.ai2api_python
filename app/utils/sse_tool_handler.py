@@ -257,14 +257,16 @@ class SSEToolHandler:
             # 重置状态
             self._reset_all_state()
 
-    def _process_answer_phase(self, edit_content: str) -> Generator[str, None, None]:
+    def _process_answer_phase(self, delta_content: str) -> Generator[str, None, None]:
         """处理回答阶段（优化版本）"""
-        if not edit_content:
+        if not delta_content:
             return
 
+        logger.info(f"📝 工具处理器收到答案内容: {delta_content[:50]}...")
+
         # 添加到缓冲区
-        self.content_buffer += edit_content
-        self.buffer_size += len(edit_content)
+        self.content_buffer += delta_content
+        self.buffer_size += len(delta_content)
 
         current_time = time.time()
         time_since_last_flush = current_time - self.last_flush_time
@@ -273,8 +275,8 @@ class SSEToolHandler:
         should_flush = (
             self.buffer_size >= self.max_buffer_size or  # 缓冲区满了
             time_since_last_flush >= self.flush_interval or  # 时间间隔到了
-            '\n' in edit_content or  # 包含换行符
-            '。' in edit_content or '！' in edit_content or '？' in edit_content  # 包含句子结束符
+            '\n' in delta_content or  # 包含换行符
+            '。' in delta_content or '！' in delta_content or '？' in delta_content  # 包含句子结束符
         )
 
         if should_flush and self.content_buffer:
@@ -285,11 +287,13 @@ class SSEToolHandler:
         if not self.content_buffer:
             return
 
-        logger.debug(f"💬 刷新缓冲区: {self.buffer_size} 字符")
+        logger.info(f"💬 工具处理器刷新缓冲区: {self.buffer_size} 字符 - {self.content_buffer[:50]}...")
 
         if self.stream:
             chunk = self._create_content_chunk(self.content_buffer)
-            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            output_data = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            logger.info(f"➡️ 工具处理器输出: {output_data[:100]}...")
+            yield output_data
 
         # 清空缓冲区
         self.content_buffer = ""

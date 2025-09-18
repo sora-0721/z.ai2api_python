@@ -4,34 +4,92 @@
 import json
 import time
 import uuid
+import random
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Generator, AsyncGenerator
 import httpx
 import asyncio
+from fake_useragent import UserAgent
 
 from app.core.config import settings
 from app.utils.logger import get_logger
 from app.utils.token_pool import get_token_pool, initialize_token_pool
-from app.utils.user_agent import get_dynamic_headers as get_base_dynamic_headers
 
 logger = get_logger()
+
+# 全局 UserAgent 实例（单例模式）
+_user_agent_instance = None
+
+
+def get_user_agent_instance() -> UserAgent:
+    """获取或创建 UserAgent 实例（单例模式）"""
+    global _user_agent_instance
+    if _user_agent_instance is None:
+        _user_agent_instance = UserAgent()
+    return _user_agent_instance
 
 
 def get_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
     """生成动态浏览器headers，包含随机User-Agent"""
-    # 确定 referer URL
-    referer = f"https://chat.z.ai/c/{chat_id}" if chat_id else "https://chat.z.ai/"
+    ua = get_user_agent_instance()
 
-    # 使用通用的用户代理工具生成基础 headers
-    headers = get_base_dynamic_headers(
-        referer=referer,
-        origin="https://chat.z.ai",
-        additional_headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-            "X-FE-Version": "prod-fe-1.0.79",
-        }
-    )
+    # 随机选择浏览器类型，偏向Chrome和Edge
+    browser_choices = ["chrome", "chrome", "chrome", "edge", "edge", "firefox", "safari"]
+    browser_type = random.choice(browser_choices)
+
+    try:
+        if browser_type == "chrome":
+            user_agent = ua.chrome
+        elif browser_type == "edge":
+            user_agent = ua.edge
+        elif browser_type == "firefox":
+            user_agent = ua.firefox
+        elif browser_type == "safari":
+            user_agent = ua.safari
+        else:
+            user_agent = ua.random
+    except:
+        user_agent = ua.random
+
+    # 提取版本信息
+    chrome_version = "139"
+    edge_version = "139"
+
+    if "Chrome/" in user_agent:
+        try:
+            chrome_version = user_agent.split("Chrome/")[1].split(".")[0]
+        except:
+            pass
+
+    if "Edg/" in user_agent:
+        try:
+            edge_version = user_agent.split("Edg/")[1].split(".")[0]
+            sec_ch_ua = f'"Microsoft Edge";v="{edge_version}", "Chromium";v="{chrome_version}", "Not_A Brand";v="24"'
+        except:
+            sec_ch_ua = f'"Not_A Brand";v="8", "Chromium";v="{chrome_version}", "Google Chrome";v="{chrome_version}"'
+    elif "Firefox/" in user_agent:
+        sec_ch_ua = None  # Firefox不使用sec-ch-ua
+    else:
+        sec_ch_ua = f'"Not_A Brand";v="8", "Chromium";v="{chrome_version}", "Google Chrome";v="{chrome_version}"'
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": user_agent,
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "X-FE-Version": "prod-fe-1.0.79",
+        "Origin": "https://chat.z.ai",
+    }
+
+    if sec_ch_ua:
+        headers["sec-ch-ua"] = sec_ch_ua
+        headers["sec-ch-ua-mobile"] = "?0"
+        headers["sec-ch-ua-platform"] = '"Windows"'
+
+    if chat_id:
+        headers["Referer"] = f"https://chat.z.ai/c/{chat_id}"
+    else:
+        headers["Referer"] = "https://chat.z.ai/"
 
     return headers
 
