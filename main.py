@@ -13,7 +13,6 @@ from app.core import openai
 from app.utils.reload_config import RELOAD_CONFIG
 from app.utils.logger import setup_logger
 from app.utils.token_pool import initialize_token_pool
-from app.utils.process_manager import ensure_service_uniqueness
 from app.providers import initialize_providers
 
 from granian import Granian
@@ -71,11 +70,7 @@ async def root():
 
 
 def run_server():
-    # 服务唯一性检查
     service_name = settings.SERVICE_NAME
-    if not ensure_service_uniqueness(service_name=service_name, port=settings.LISTEN_PORT):
-        logger.error("❌ 服务已在运行，程序退出")
-        sys.exit(1)
 
     logger.info(f"🚀 启动 {service_name} 服务...")
     logger.info(f"📡 监听地址: 0.0.0.0:{settings.LISTEN_PORT}")
