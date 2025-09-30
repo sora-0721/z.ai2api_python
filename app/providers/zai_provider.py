@@ -146,7 +146,7 @@ class ZAIProvider(BaseProvider):
         
         # 构建MCP服务器列表
         mcp_servers = []
-        if is_search:
+        if is_search and "-4.5" in requested_model:
             mcp_servers.append("deep-web-search")
             self.logger.info("🔍 检测到搜索模型，添加 deep-web-search MCP 服务器")
         
@@ -164,7 +164,38 @@ class ZAIProvider(BaseProvider):
                 "auto_web_search": is_search,
                 "preview_mode": False,
                 "flags": [],
-                "features": [],
+                "features": [
+                    {
+                        "type": "mcp",
+                        "server": "vibe-coding",
+                        "status": "hidden"
+                    },
+                    {
+                        "type": "mcp",
+                        "server": "ppt-maker",
+                        "status": "hidden"
+                    },
+                    {
+                        "type": "mcp",
+                        "server": "image-search",
+                        "status": "hidden"
+                    },
+                    {
+                        "type": "mcp",
+                        "server": "deep-research",
+                        "status": "hidden"
+                    },
+                    {
+                        "type": "tool_selector",
+                        "server": "tool_selector",
+                        "status": "hidden"
+                    },
+                    {
+                        "type": "mcp",
+                        "server": "advanced-search",
+                        "status": "hidden"
+                    }
+                ],
                 "enable_thinking": is_thinking,
             },
             "background_tasks": {
