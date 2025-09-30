@@ -46,6 +46,9 @@ class ZAIProvider(BaseProvider):
             settings.THINKING_MODEL: "0727-360B-API",  # GLM-4.5-Thinking
             settings.SEARCH_MODEL: "0727-360B-API",  # GLM-4.5-Search
             settings.AIR_MODEL: "0727-106B-API",  # GLM-4.5-Air
+            settings.GLM46_MODEL: "GLM-4-6-API-V1",  # GLM-4.6
+            settings.GLM46_THINKING_MODEL: "GLM-4-6-API-V1",  # GLM-4.6-Thinking
+            settings.GLM46_SEARCH_MODEL: "GLM-4-6-API-V1",  # GLM-4.6-Search
         }
     
     def get_supported_models(self) -> List[str]:
@@ -54,7 +57,10 @@ class ZAIProvider(BaseProvider):
             settings.PRIMARY_MODEL,
             settings.THINKING_MODEL,
             settings.SEARCH_MODEL,
-            settings.AIR_MODEL
+            settings.AIR_MODEL,
+            settings.GLM46_MODEL,
+            settings.GLM46_THINKING_MODEL,
+            settings.GLM46_SEARCH_MODEL,
         ]
     
     async def get_token(self) -> str:
@@ -131,9 +137,9 @@ class ZAIProvider(BaseProvider):
         
         # 确定请求的模型特性
         requested_model = request.model
-        is_thinking = requested_model == settings.THINKING_MODEL
-        is_search = requested_model == settings.SEARCH_MODEL
-        is_air = requested_model == settings.AIR_MODEL
+        is_thinking = "-thinking" in requested_model.casefold()
+        is_search = "-search" in requested_model.casefold()
+        is_air = "-air" in requested_model.casefold()
         
         # 获取上游模型ID
         upstream_model_id = self.model_mapping.get(requested_model, "0727-360B-API")
