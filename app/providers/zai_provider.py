@@ -614,7 +614,114 @@ class ZAIProvider(BaseProvider):
         chat_id: str, 
         model: str
     ) -> Dict[str, Any]:
-        """处理非流式响应"""
-        # 简化的非流式响应处理
-        content = "非流式响应处理中..."
-        return self.create_openai_response(chat_id, model, content)
+        """处理非流式响应
+
+        说明：上游始终以 SSE 形式返回（transform_request 固定 stream=True），
+        因此这里需要聚合 aiter_lines() 的 data: 块，提取 usage、思考内容与答案内容，
+        并最终产出一次性 OpenAI 格式响应。
+        """
+        final_content = ""
+        reasoning_content = ""
+        usage_info: Dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+
+        try:
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+
+                line = line.strip()
+
+                # 仅处理以 data: 开头的 SSE 行，其余行尝试作为错误/JSON 忽略
+                if not line.startswith("data:"):
+                    # 尝试解析为错误 JSON
+                    try:
+                        maybe_err = json.loads(line)
+                        if isinstance(maybe_err, dict) and (
+                            "error" in maybe_err or "code" in maybe_err or "message" in maybe_err
+                        ):
+                            # 统一错误处理
+                            msg = (
+                                (maybe_err.get("error") or {}).get("message")
+                                if isinstance(maybe_err.get("error"), dict)
+                                else maybe_err.get("message")
+                            ) or "上游返回错误"
+                            return self.handle_error(Exception(msg), "API响应")
+                    except Exception:
+                        pass
+                    continue
+
+                data_str = line[5:].strip()
+                if not data_str or data_str in ("[DONE]", "DONE", "done"):
+                    continue
+
+                # 解析 SSE 数据块
+                try:
+                    chunk = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+
+                if chunk.get("type") != "chat:completion":
+                    continue
+
+                data = chunk.get("data", {})
+                phase = data.get("phase")
+                delta_content = data.get("delta_content", "")
+                edit_content = data.get("edit_content", "")
+
+                # 记录用量（通常在最后块中出现，但这里每次覆盖保持最新）
+                if data.get("usage"):
+                    try:
+                        usage_info = data["usage"]
+                    except Exception:
+                        pass
+
+                # 思考阶段聚合（去除 <details><summary>... 包裹头）
+                if phase == "thinking":
+                    if delta_content:
+                        if delta_content.startswith("<details"):
+                            cleaned = (
+                                delta_content.split("</summary>\n>")[-1].strip()
+                                if "</summary>\n>" in delta_content
+                                else delta_content
+                            )
+                        else:
+                            cleaned = delta_content
+                        reasoning_content += cleaned
+
+                # 答案阶段聚合
+                elif phase == "answer":
+                    # 当 edit_content 同时包含思考结束标记与答案时，提取答案部分
+                    if edit_content and "</details>\n" in edit_content:
+                        content_after = edit_content.split("</details>\n")[-1]
+                        if content_after:
+                            final_content += content_after
+                    elif delta_content:
+                        final_content += delta_content
+
+        except Exception as e:
+            self.logger.error(f"❌ 非流式响应处理错误: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            # 返回统一错误响应
+            return self.handle_error(e, "非流式聚合")
+
+        # 清理并返回
+        final_content = (final_content or "").strip()
+        reasoning_content = (reasoning_content or "").strip()
+
+        # 若没有聚合到答案，但有思考内容，则保底返回思考内容
+        if not final_content and reasoning_content:
+            final_content = reasoning_content
+
+        # 返回包含推理内容的标准响应（若无推理则不会携带）
+        return self.create_openai_response_with_reasoning(
+            chat_id,
+            model,
+            final_content,
+            reasoning_content,
+            usage_info,
+        )
