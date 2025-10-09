@@ -10,6 +10,11 @@ import time
 import uuid
 import httpx
 import asyncio
+import hmac
+import hashlib
+import base64
+from urllib.parse import urlencode
+import os
 from datetime import datetime
 from typing import Dict, List, Any, Optional, AsyncGenerator, Union
 
@@ -22,6 +27,57 @@ from app.core.zai_transformer import generate_uuid, get_zai_dynamic_headers
 from app.utils.sse_tool_handler import SSEToolHandler
 
 logger = get_logger()
+
+
+def _urlsafe_b64decode(data: str) -> bytes:
+    """Decode a URL-safe base64 string with proper padding."""
+    if isinstance(data, str):
+        data_bytes = data.encode("utf-8")
+    else:
+        data_bytes = data
+    padding = b"=" * (-len(data_bytes) % 4)
+    return base64.urlsafe_b64decode(data_bytes + padding)
+
+
+def _decode_jwt_payload(token: str) -> Dict[str, Any]:
+    """Decode JWT payload without verification to extract metadata."""
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        payload_raw = _urlsafe_b64decode(parts[1])
+        return json.loads(payload_raw.decode("utf-8", errors="ignore"))
+    except Exception:
+        return {}
+
+
+def _extract_user_id_from_token(token: str) -> str:
+    """Extract user_id from a JWT's payload. Fallback to 'guest'."""
+    payload = _decode_jwt_payload(token) if token else {}
+    for key in ("id", "user_id", "uid", "sub"):
+        val = payload.get(key)
+        if isinstance(val, (str, int)) and str(val):
+            return str(val)
+    return "guest"
+
+
+def generate_signature(message_text: str, request_id: str, timestamp_ms: int, user_id: str, secret: str = "junjie") -> str:
+    """Dual-layer HMAC-SHA256 signature.
+
+    Layer1: derived key = HMAC(secret, window_index)
+    Layer2: signature = HMAC(derived_key, canonical_string)
+    canonical_string = "requestId,<id>,timestamp,<ts>,user_id,<uid>|<msg>|<ts>"
+    """
+    r = str(timestamp_ms)
+    e = f"requestId,{request_id},timestamp,{timestamp_ms},user_id,{user_id}"
+    t = message_text or ""
+    i = f"{e}|{t}|{r}"
+
+    window_index = timestamp_ms // (5 * 60 * 1000)
+    root_key = (secret or "junjie").encode("utf-8")
+    derived_hex = hmac.new(root_key, str(window_index).encode("utf-8"), hashlib.sha256).hexdigest()
+    signature = hmac.new(derived_hex.encode("utf-8"), i.encode("utf-8"), hashlib.sha256).hexdigest()
+    return signature
 
 
 class ZAIProvider(BaseProvider):
@@ -136,6 +192,18 @@ class ZAIProvider(BaseProvider):
                 })
         
         # 确定请求的模型特性
+        # Extract last user message text for signing
+        last_user_text = ""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                content = m.get("content")
+                if isinstance(content, str):
+                    last_user_text = content
+                    break
+                elif isinstance(content, list):
+                    texts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+                    last_user_text = "\n".join([t for t in texts if t])
+                    break
         requested_model = request.model
         is_thinking = "-thinking" in requested_model.casefold()
         is_search = "-search" in requested_model.casefold()
@@ -239,12 +307,36 @@ class ZAIProvider(BaseProvider):
         headers = get_zai_dynamic_headers(chat_id)
         if token:
             headers["Authorization"] = f"Bearer {token}"
+
+        # Dual-layer HMAC signing metadata and header
+        user_id = _extract_user_id_from_token(token)
+        timestamp_ms = int(time.time() * 1000)
+        request_id = generate_uuid()
+        secret = os.getenv("ZAI_SIGNING_SECRET", "junjie") or "junjie"
+        signature = generate_signature(
+            message_text=last_user_text,
+            request_id=request_id,
+            timestamp_ms=timestamp_ms,
+            user_id=user_id,
+            secret=secret,
+        )
+        query_params = {
+            "timestamp": timestamp_ms,
+            "requestId": request_id,
+            "user_id": user_id,
+            "token": token or "",
+            "current_url": f"https://chat.z.ai/c/{chat_id}",
+            "pathname": f"/c/{chat_id}",
+            "signature_timestamp": timestamp_ms,
+        }
+        signed_url = f"{self.config.api_endpoint}?{urlencode(query_params)}"
+        headers["X-Signature"] = signature
         
         # 存储当前token用于错误处理
         self._current_token = token
 
         return {
-            "url": self.config.api_endpoint,
+            "url": signed_url,
             "headers": headers,
             "body": body,
             "token": token,
