@@ -9,7 +9,6 @@ import json
 import time
 import uuid
 import httpx
-import asyncio
 import hmac
 import hashlib
 import base64
@@ -359,7 +358,7 @@ class ZAIProvider(BaseProvider):
             # 根据请求类型返回响应
             if request.stream:
                 # 流式响应
-                return self._create_stream_response_with_retry(request, transformed)
+                return self._create_stream_response(request, transformed)
             else:
                 # 非流式响应
                 async with httpx.AsyncClient(timeout=30.0) as client:
@@ -380,134 +379,66 @@ class ZAIProvider(BaseProvider):
             self.log_response(False, str(e))
             return self.handle_error(e, "请求处理")
 
-    async def _create_stream_response_with_retry(
+    
+    async def _create_stream_response(
         self,
         request: OpenAIRequest,
         transformed: Dict[str, Any]
     ) -> AsyncGenerator[str, None]:
-        """创建带重试机制的流式响应生成器"""
-        retry_count = 0
-        last_error = None
+
         current_token = transformed.get("token", "")
-
-        while retry_count <= settings.MAX_RETRIES:
-            try:
-                # 如果是重试，重新获取令牌并更新请求
-                if retry_count > 0:
-                    delay = settings.RETRY_DELAY
-                    self.logger.warning(f"重试请求 ({retry_count}/{settings.MAX_RETRIES}) - 等待 {delay:.1f}s")
-                    await asyncio.sleep(delay)
-
-                    # 标记前一个token失败（如果不是匿名模式）
-                    if current_token and not settings.ANONYMOUS_MODE:
-                        self.mark_token_failure(current_token, Exception(f"Retry {retry_count}: {last_error}"))
-
-                    # 重新获取令牌
-                    self.logger.info("🔑 重新获取令牌用于重试...")
-                    new_token = await self.get_token()
-                    if not new_token:
-                        self.logger.error("❌ 重试时无法获取有效的认证令牌")
-                        raise Exception("重试时无法获取有效的认证令牌")
-                    transformed["headers"]["Authorization"] = f"Bearer {new_token}"
-                    current_token = new_token
-
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    # 发送请求到上游
-                    self.logger.info(f"🎯 发送请求到 Z.AI: {transformed['url']}")
-                    async with client.stream(
-                        "POST",
-                        transformed["url"],
-                        json=transformed["body"],
-                        headers=transformed["headers"],
-                    ) as response:
-                        # 检查响应状态码
-                        if response.status_code == 400:
-                            # 400 错误，触发重试
-                            error_text = await response.aread()
-                            error_msg = error_text.decode('utf-8', errors='ignore')
-                            self.logger.warning(f"❌ 上游返回 400 错误 (尝试 {retry_count + 1}/{settings.MAX_RETRIES + 1})")
-
-                            retry_count += 1
-                            last_error = f"400 Bad Request: {error_msg}"
-
-                            # 如果还有重试机会，继续循环
-                            if retry_count <= settings.MAX_RETRIES:
-                                continue
-                            else:
-                                # 达到最大重试次数，抛出错误
-                                self.logger.error(f"❌ 达到最大重试次数 ({settings.MAX_RETRIES})，请求失败")
-                                error_response = {
-                                    "error": {
-                                        "message": f"Request failed after {settings.MAX_RETRIES} retries: {last_error}",
-                                        "type": "upstream_error",
-                                        "code": 400
-                                    }
-                                }
-                                yield f"data: {json.dumps(error_response)}\n\n"
-                                yield "data: [DONE]\n\n"
-                                return
-
-                        elif response.status_code != 200:
-                            # 其他错误，直接返回
-                            self.logger.error(f"❌ 上游返回错误: {response.status_code}")
-                            error_text = await response.aread()
-                            error_msg = error_text.decode('utf-8', errors='ignore')
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                self.logger.info(f"🎯 发送请求到 Z.AI: {transformed['url']}")
+                async with client.stream(
+                    "POST",
+                    transformed["url"],
+                    json=transformed["body"],
+                    headers=transformed["headers"],
+                ) as response:
+                    if response.status_code != 200:
+                        self.logger.error(f"❌ 上游返回错误: {response.status_code}")
+                        error_text = await response.aread()
+                        error_msg = error_text.decode('utf-8', errors='ignore')
+                        if error_msg:
                             self.logger.error(f"❌ 错误详情: {error_msg}")
-
-                            error_response = {
-                                "error": {
-                                    "message": f"Upstream error: {response.status_code}",
-                                    "type": "upstream_error",
-                                    "code": response.status_code
-                                }
+                        error_response = {
+                            "error": {
+                                "message": f"Upstream error: {response.status_code}",
+                                "type": "upstream_error",
+                                "code": response.status_code
                             }
-                            yield f"data: {json.dumps(error_response)}\n\n"
-                            yield "data: [DONE]\n\n"
-                            return
-
-                        # 200 成功，处理响应
-                        if retry_count > 0:
-                            self.logger.info(f"✨ 第 {retry_count} 次重试成功")
-
-                        # 标记token使用成功（如果不是匿名模式）
-                        if current_token and not settings.ANONYMOUS_MODE:
-                            token_pool = get_token_pool()
-                            if token_pool:
-                                token_pool.mark_token_success(current_token)
-
-                        # 处理流式响应
-                        chat_id = transformed["chat_id"]
-                        model = transformed["model"]
-                        async for chunk in self._handle_stream_response(response, chat_id, model, request, transformed):
-                            yield chunk
+                        }
+                        yield f"data: {json.dumps(error_response)}\n\n"
+                        yield "data: [DONE]\n\n"
                         return
 
-            except Exception as e:
-                self.logger.error(f"❌ 流处理错误: {e}")
-                import traceback
-                self.logger.error(traceback.format_exc())
+                    if current_token and not settings.ANONYMOUS_MODE:
+                        token_pool = get_token_pool()
+                        if token_pool:
+                            token_pool.mark_token_success(current_token)
 
-                # 标记token失败（如果不是匿名模式）
-                if current_token and not settings.ANONYMOUS_MODE:
-                    self.mark_token_failure(current_token, e)
-
-                # 检查是否还可以重试
-                retry_count += 1
-                last_error = str(e)
-
-                if retry_count > settings.MAX_RETRIES:
-                    # 达到最大重试次数，返回错误
-                    self.logger.error(f"❌ 达到最大重试次数 ({settings.MAX_RETRIES})，流处理失败")
-                    error_response = {
-                        "error": {
-                            "message": f"Stream processing failed after {settings.MAX_RETRIES} retries: {last_error}",
-                            "type": "stream_error"
-                        }
-                    }
-                    yield f"data: {json.dumps(error_response)}\n\n"
-                    yield "data: [DONE]\n\n"
+                    chat_id = transformed["chat_id"]
+                    model = transformed["model"]
+                    async for chunk in self._handle_stream_response(response, chat_id, model, request, transformed):
+                        yield chunk
                     return
-    
+        except Exception as e:
+            self.logger.error(f"❌ 流处理错误: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            if current_token and not settings.ANONYMOUS_MODE:
+                self.mark_token_failure(current_token, e)
+            error_response = {
+                "error": {
+                    "message": str(e),
+                    "type": "stream_error"
+                }
+            }
+            yield f"data: {json.dumps(error_response)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
     async def transform_response(
         self, 
         response: httpx.Response, 
