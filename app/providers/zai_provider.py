@@ -631,7 +631,7 @@ class ZAIProvider(BaseProvider):
                                             model,
                                             {
                                                 "role": "assistant",
-                                                "thinking": {"content": content}
+                                                "reasoning_content": content
                                             }
                                         )
                                         yield await self.format_sse_chunk(thinking_chunk)
