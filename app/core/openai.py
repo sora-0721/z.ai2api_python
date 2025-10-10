@@ -120,6 +120,9 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
     role = request.messages[0].role if request.messages else "unknown"
     logger.info(f"😶‍🌫️ 收到客户端请求 - 模型: {request.model}, 流式: {request.stream}, 消息数: {len(request.messages)}, 角色: {role}, 工具数: {len(request.tools) if request.tools else 0}")
 
+    # 获取提供商信息（用于统计）
+    provider = "unknown"
+
     try:
         # Validate API key (skip if SKIP_AUTH_TOKEN is enabled)
         if not settings.SKIP_AUTH_TOKEN:
@@ -132,11 +135,18 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
 
         # 使用多提供商路由器处理请求
         router_instance = get_provider_router_instance()
+
+        # 从路由器获取提供商信息
+        provider_info = router_instance.get_provider_for_model(request.model)
+        if provider_info:
+            provider = provider_info.get("provider", "unknown")
+
         result = await router_instance.route_request(request)
 
         # 检查是否有错误
         if isinstance(result, dict) and "error" in result:
             error_info = result["error"]
+
             if error_info.get("code") == "model_not_found":
                 raise HTTPException(status_code=404, detail=error_info["message"])
             else:
@@ -167,102 +177,9 @@ async def chat_completions(request: OpenAIRequest, authorization: str = Header(.
                 # 如果是异步生成器，需要收集所有内容
                 return await handle_non_stream_response(result, request)
 
-    except HTTPException:
+    except HTTPException as http_exc:
         # 重新抛出 HTTP 异常
         raise
     except Exception as e:
         logger.error(f"❌ 请求处理失败: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
-# Token pool management endpoints
-
-
-@router.get("/v1/token-pool/status")
-async def get_token_pool_status():
-    """获取token池状态信息"""
-    try:
-        token_pool = get_token_pool()
-        if not token_pool:
-            return {
-                "status": "disabled",
-                "message": "Token池未初始化，当前仅使用匿名模式",
-                "anonymous_mode": settings.ANONYMOUS_MODE,
-                "auth_tokens_file": settings.AUTH_TOKENS_FILE,
-                "auth_tokens_configured": len(settings.auth_token_list) > 0
-            }
-
-        pool_status = token_pool.get_pool_status()
-        return {
-            "status": "active",
-            "pool_info": pool_status,
-            "config": {
-                "anonymous_mode": settings.ANONYMOUS_MODE,
-                "failure_threshold": settings.TOKEN_FAILURE_THRESHOLD,
-                "recovery_timeout": settings.TOKEN_RECOVERY_TIMEOUT,
-                "health_check_interval": settings.TOKEN_HEALTH_CHECK_INTERVAL
-            }
-        }
-    except Exception as e:
-        logger.error(f"获取token池状态失败: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get token pool status: {str(e)}")
-
-
-@router.post("/v1/token-pool/health-check")
-async def trigger_health_check():
-    """手动触发token池健康检查"""
-    try:
-        token_pool = get_token_pool()
-        if not token_pool:
-            raise HTTPException(status_code=404, detail="Token池未初始化")
-
-        start_time = time.time()
-        logger.info("🔍 API触发Token池健康检查...")
-        await token_pool.health_check_all()
-        duration = time.time() - start_time
-
-        pool_status = token_pool.get_pool_status()
-        total_tokens = pool_status['total_tokens']
-        healthy_tokens = sum(1 for token_info in pool_status['tokens'] if token_info['is_healthy'])
-
-        response = {
-            "status": "completed",
-            "message": f"健康检查已完成，耗时 {duration:.2f} 秒",
-            "summary": {
-                "total_tokens": total_tokens,
-                "healthy_tokens": healthy_tokens,
-                "unhealthy_tokens": total_tokens - healthy_tokens,
-                "health_rate": f"{(healthy_tokens/total_tokens*100):.1f}%" if total_tokens > 0 else "0%",
-                "duration_seconds": round(duration, 2)
-            },
-            "pool_info": pool_status
-        }
-
-        logger.info(f"✅ API健康检查完成: {healthy_tokens}/{total_tokens} 个token健康")
-        return response
-    except Exception as e:
-        logger.error(f"健康检查失败: {e}")
-        raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
-
-
-@router.post("/v1/token-pool/update")
-async def update_token_pool_endpoint(tokens: List[str]):
-    """动态更新token池"""
-    try:
-        from app.utils.token_pool import update_token_pool
-
-        valid_tokens = [token.strip() for token in tokens if token.strip()]
-        if not valid_tokens:
-            raise HTTPException(status_code=400, detail="至少需要提供一个有效的token")
-
-        update_token_pool(valid_tokens)
-        token_pool = get_token_pool()
-
-        return {
-            "status": "updated",
-            "message": f"Token池已更新，共 {len(valid_tokens)} 个token",
-            "pool_info": token_pool.get_pool_status() if token_pool else None
-        }
-    except Exception as e:
-        logger.error(f"更新token池失败: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update token pool: {str(e)}")

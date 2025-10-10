@@ -7,13 +7,16 @@ import psutil
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.core import openai
 from app.utils.reload_config import RELOAD_CONFIG
 from app.utils.logger import setup_logger
-from app.utils.token_pool import initialize_token_pool
 from app.providers import initialize_providers
+
+from app.admin import routes as admin_routes
+from app.admin import api as admin_api
 
 from granian import Granian
 
@@ -24,17 +27,23 @@ logger = setup_logger(log_dir="logs", debug_mode=settings.DEBUG_LOGGING)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 初始化 Token 数据库
+    from app.services.token_dao import init_token_database
+    await init_token_database()
+
     # 初始化提供商系统
     initialize_providers()
 
-    # 初始化 token 池
-    token_list = settings.auth_token_list
-    if token_list:
-        token_pool = initialize_token_pool(
-            tokens=token_list,
-            failure_threshold=settings.TOKEN_FAILURE_THRESHOLD,
-            recovery_timeout=settings.TOKEN_RECOVERY_TIMEOUT
-        )
+    # 从数据库初始化 token 池（Z.AI 提供商）
+    from app.utils.token_pool import initialize_token_pool_from_db
+    token_pool = await initialize_token_pool_from_db(
+        provider="zai",
+        failure_threshold=settings.TOKEN_FAILURE_THRESHOLD,
+        recovery_timeout=settings.TOKEN_RECOVERY_TIMEOUT
+    )
+
+    if not token_pool and not settings.ANONYMOUS_MODE:
+        logger.warning("⚠️ 未找到可用 Token 且未启用匿名模式，服务可能无法正常工作")
 
     yield
 
@@ -53,8 +62,21 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
+# 挂载web端静态文件目录
+try:
+    app.mount("/static", StaticFiles(directory="app/static"), name="static")
+except RuntimeError:
+    # 如果 static 目录不存在，创建它
+    os.makedirs("app/static/css", exist_ok=True)
+    os.makedirs("app/static/js", exist_ok=True)
+    app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
 # Include API routers
 app.include_router(openai.router)
+
+# Include admin routers
+app.include_router(admin_routes.router)
+app.include_router(admin_api.router)
 
 
 @app.options("/")
