@@ -22,6 +22,7 @@ def setup_logger(log_dir, log_retention_days=7, log_rotation="1 day", debug_mode
     global app_logger
 
     try:
+        # 移除所有现有的日志处理器（支持热重载）
         logger.remove()
 
         log_level = "DEBUG" if debug_mode else "INFO"
@@ -33,8 +34,10 @@ def setup_logger(log_dir, log_retention_days=7, log_rotation="1 day", debug_mode
             "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | <level>{message}</level>"
         )
 
+        # 添加控制台输出（根据 debug_mode 设置级别）
         logger.add(sys.stderr, level=log_level, format=console_format, colorize=True)
 
+        # 只有在 debug_mode 时才添加文件输出
         if debug_mode:
             log_path = Path(log_dir)
             log_path.mkdir(parents=True, exist_ok=True)

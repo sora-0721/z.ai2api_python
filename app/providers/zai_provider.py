@@ -130,7 +130,11 @@ class ZAIProvider(BaseProvider):
                         data = response.json()
                         token = data.get("token", "")
                         if token:
-                            self.logger.debug(f"获取访客令牌成功: {token[:20]}...")
+                            # 判断令牌类型（通过检查邮箱或user_id）
+                            email = data.get("email", "")
+                            is_guest = "@guest.com" in email or "Guest-" in email
+                            token_type = "匿名用户" if is_guest else "认证用户"
+                            self.logger.debug(f"获取令牌成功 ({token_type}): {token[:20]}...")
                             return token
             except Exception as e:
                 self.logger.warning(f"异步获取访客令牌失败: {e}")
@@ -149,7 +153,7 @@ class ZAIProvider(BaseProvider):
 
         # 如果token池为空或没有可用token，使用配置的AUTH_TOKEN
         if settings.AUTH_TOKEN and settings.AUTH_TOKEN != "sk-your-api-key":
-            self.logger.debug("使用配置的AUTH_TOKEN")
+            self.logger.debug(f"使用配置的AUTH_TOKEN")
             return settings.AUTH_TOKEN
 
         self.logger.error("❌ 无法获取有效的认证令牌")
