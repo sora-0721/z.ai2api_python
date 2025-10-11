@@ -12,7 +12,7 @@ import asyncio
 
 from app.core.config import settings
 from app.utils.logger import get_logger
-from app.utils.token_pool import get_token_pool, initialize_token_pool
+from app.utils.token_pool import get_token_pool
 from app.utils.user_agent import get_random_user_agent
 
 logger = get_logger()
@@ -58,8 +58,13 @@ def get_zai_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
 
     # Z.AI 特定的 headers
     headers = {
+        # Core content negotiation
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
+        # Connection/perf hints to reduce handshake overhead
+        "Connection": "keep-alive",
+        "Cache-Control": "no-cache",
+        # UA and app-specific headers
         "User-Agent": user_agent,
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         "X-FE-Version": "prod-fe-1.0.79",
@@ -99,7 +104,7 @@ def get_auth_token_sync() -> str:
                     data = response.json()
                     token = data.get("token", "")
                     if token:
-                        logger.debug(f"获取访客令牌成功: {token[:20]}...")
+                        logger.debug(f"同步获取匿名令牌成功: {token[:20]}...")
                         return token
         except Exception as e:
             logger.warning(f"获取访客令牌失败: {e}")
@@ -166,7 +171,7 @@ class ZAITransformer:
                         data = response.json()
                         token = data.get("token", "")
                         if token:
-                            logger.debug(f"获取访客令牌成功: {token[:20]}...")
+                            logger.debug(f"异步获取匿名令牌成功: {token[:20]}...")
                             return token
             except Exception as e:
                 logger.warning(f"异步获取访客令牌失败: {e}")

@@ -49,8 +49,8 @@ class LongCatProvider(BaseProvider):
     def get_passport_token(self) -> Optional[str]:
         """获取 LongCat passport token"""
         # 优先使用环境变量中的单个token
-        if settings.LONGCAT_PASSPORT_TOKEN:
-            return settings.LONGCAT_PASSPORT_TOKEN
+        if settings.LONGCAT_TOKEN:
+            return settings.LONGCAT_TOKEN
 
         # 从token文件中随机选择一个
         token_list = settings.longcat_token_list
@@ -141,7 +141,7 @@ class LongCatProvider(BaseProvider):
         # 获取认证token
         passport_token = self.get_passport_token()
         if not passport_token:
-            raise Exception("未配置 LongCat passport token，请设置 LONGCAT_PASSPORT_TOKEN 环境变量或 LONGCAT_TOKENS_FILE")
+            raise Exception("未配置 LongCat passport token，请设置 LONGCAT_TOKEN 环境变量")
 
         # 生成动态 User-Agent
         dynamic_headers = get_dynamic_headers()

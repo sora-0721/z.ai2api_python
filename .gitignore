@@ -17,6 +17,7 @@ logs/
 backup/
 uv.lock
 AGENTS.md
+*.db
 
 # AI Toolset
 .augment/

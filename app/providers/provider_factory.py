@@ -152,11 +152,23 @@ class ProviderRouter:
             logger.error(f"❌ {error_msg}")
             return provider.handle_error(e, "路由处理")
     
+    def get_provider_for_model(self, model: str) -> Optional[Dict[str, str]]:
+        """
+        获取模型对应的提供商信息
+
+        Returns:
+            包含提供商名称的字典，例如 {"provider": "zai"}
+        """
+        provider = self.factory.get_provider_for_model(model)
+        if provider:
+            return {"provider": provider.name}
+        return None
+
     def get_models_list(self) -> Dict[str, Any]:
         """获取模型列表（OpenAI格式）"""
         models = []
         current_time = int(time.time())
-        
+
         # 按提供商分组获取模型
         for provider_name in self.factory.list_providers():
             provider_models = self.factory.get_models_for_provider(provider_name)
@@ -167,7 +179,7 @@ class ProviderRouter:
                     "created": current_time,
                     "owned_by": provider_name
                 })
-        
+
         return {
             "object": "list",
             "data": models
