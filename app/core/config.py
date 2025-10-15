@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     # Provider Configuration
     DEFAULT_PROVIDER: str = os.getenv("DEFAULT_PROVIDER", "zai")  # 默认提供商：zai/k2think/longcat
 
+    # Admin Panel Authentication
+    ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin123")  # 管理后台密码
+    SESSION_SECRET_KEY: str = os.getenv("SESSION_SECRET_KEY", "your-secret-key-change-in-production")  # Session 密钥
+
     # Browser Headers
     CLIENT_HEADERS: Dict[str, str] = {
         "Content-Type": "application/json",
