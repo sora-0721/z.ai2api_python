@@ -60,29 +60,56 @@ uv run python main.py  # 或 python main.py
 
 ### Docker 部署
 
+从 Docker Hub 拉取镜像：
+
+```bash
+# 拉取最新镜像
+docker pull zyphrzero/z-ai2api-python:latest
+
+# 快速启动（创建数据目录）
+mkdir -p data logs
+
+# 运行容器
+docker run -d \
+  --name z-ai-api-server \
+  -p 8080:8080 \
+  -e ADMIN_PASSWORD=admin123 \
+  -e AUTH_TOKEN=sk-your-api-key \
+  -e ANONYMOUS_MODE=true \
+  -e DB_PATH=/app/data/tokens.db \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  --restart unless-stopped \
+  zyphrzero/z-ai2api-python:latest
+```
+
+启动服务：
+
+```bash
+docker compose up -d
+```
+
+#### 方式二：本地构建
+
 ```bash
 # 进入部署目录
 cd deploy
 
-# 启动服务
+# 启动服务（会自动构建镜像）
 docker compose up -d
 
 # 查看日志
 docker compose logs -f api-server
 ```
 
-服务将在 `http://localhost:8080` 启动。
-
 #### 数据持久化
 
 容器使用卷映射自动持久化数据：
 
 ```
-deploy/
-├── data/              # 数据库文件存储目录
-│   └── tokens.db      # SQLite 数据库（自动创建）
-├── logs/              # 日志文件存储目录
-└── docker-compose.yml
+data/                  # 数据库文件存储目录
+├── tokens.db          # SQLite 数据库（自动创建）
+logs/                  # 日志文件存储目录
 ```
 
 数据在容器重启或重建后仍然保留，无需担心丢失。

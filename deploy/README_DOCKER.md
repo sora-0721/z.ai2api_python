@@ -2,11 +2,46 @@
 
 ## 快速部署
 
+### 方式一: 使用预构建镜像 (推荐)
+
+从 Docker Hub 拉取镜像:
+
+```bash
+# 拉取最新镜像
+docker pull zyphrzero/z-ai2api-python:latest
+
+# 创建数据目录
+mkdir -p data logs
+
+# 快速启动
+docker run -d \
+  --name z-ai-api-server \
+  -p 8080:8080 \
+  -e ADMIN_PASSWORD=admin123 \
+  -e AUTH_TOKEN=sk-your-api-key \
+  -e ANONYMOUS_MODE=true \
+  -e DB_PATH=/app/data/tokens.db \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  --restart unless-stopped \
+  zyphrzero/z-ai2api-python:latest
+```
+
+**优势**:
+- ✅ 无需本地构建,节省时间
+- ✅ GitHub Actions 自动化构建,保证质量
+- ✅ 多架构支持 (amd64/arm64)
+- ✅ 镜像已优化,体积更小
+
+### 方式二: 使用本地构建
+
+适用于需要自定义修改代码的场景:
+
 ```bash
 # 进入部署目录
 cd deploy
 
-# 启动服务
+# 启动服务 (会自动构建镜像)
 docker compose up -d
 
 # 查看日志
@@ -79,6 +114,24 @@ docker compose logs -f
 ```
 
 ### 更新应用
+
+**使用预构建镜像**:
+
+```bash
+# 停止当前容器
+docker compose down
+
+# 拉取最新镜像
+docker pull zyphrzero/z-ai2api-python:latest
+
+# 启动新版本 (数据会自动保留)
+docker compose up -d
+
+# 清理旧镜像
+docker image prune -f
+```
+
+**使用本地构建**:
 
 ```bash
 # 拉取最新代码
