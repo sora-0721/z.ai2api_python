@@ -678,8 +678,8 @@ class ZAIProvider(BaseProvider):
                 http2=True,
             ) as client:
                 self.logger.info(f"🎯 发送请求到 Z.AI: {transformed['url']}")
-                self.logger.info(f"📦 请求体 model: {transformed['body']['model']}")
-                self.logger.info(f"📦 请求体 messages: {json.dumps(transformed['body']['messages'], ensure_ascii=False)}")
+                # self.logger.info(f"📦 请求体 model: {transformed['body']['model']}")
+                # self.logger.info(f"📦 请求体 messages: {json.dumps(transformed['body']['messages'], ensure_ascii=False)}")
                 async with client.stream(
                     "POST",
                     transformed["url"],
