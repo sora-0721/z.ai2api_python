@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # Provider Configuration
     DEFAULT_PROVIDER: str = os.getenv("DEFAULT_PROVIDER", "zai")  # 默认提供商：zai/k2think/longcat
 
+    # Proxy Configuration
+    HTTP_PROXY: Optional[str] = os.getenv("HTTP_PROXY")  # HTTP代理,格式: http://user:pass@host:port 或 http://host:port
+    HTTPS_PROXY: Optional[str] = os.getenv("HTTPS_PROXY")  # HTTPS代理,格式同上
+    SOCKS5_PROXY: Optional[str] = os.getenv("SOCKS5_PROXY")  # SOCKS5代理,格式: socks5://user:pass@host:port
+
     # Admin Panel Authentication
     ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin123")  # 管理后台密码
     SESSION_SECRET_KEY: str = os.getenv("SESSION_SECRET_KEY", "your-secret-key-change-in-production")  # Session 密钥

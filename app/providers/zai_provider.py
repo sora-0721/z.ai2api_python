@@ -180,7 +180,28 @@ class ZAIProvider(BaseProvider):
             settings.GLM46_SEARCH_MODEL,
             settings.GLM46_ADVANCED_SEARCH_MODEL,
         ]
-    
+
+    def _get_proxy_config(self) -> Optional[Dict[str, str]]:
+        """Get proxy configuration from settings"""
+        proxies = {}
+
+        # Support HTTP_PROXY, HTTPS_PROXY and SOCKS5_PROXY
+        if settings.HTTP_PROXY:
+            proxies["http://"] = settings.HTTP_PROXY
+            self.logger.info(f"🔄 使用HTTP代理: {settings.HTTP_PROXY}")
+
+        if settings.HTTPS_PROXY:
+            proxies["https://"] = settings.HTTPS_PROXY
+            self.logger.info(f"🔄 使用HTTPS代理: {settings.HTTPS_PROXY}")
+
+        if settings.SOCKS5_PROXY:
+            # SOCKS5 proxy for both HTTP and HTTPS
+            proxies["http://"] = settings.SOCKS5_PROXY
+            proxies["https://"] = settings.SOCKS5_PROXY
+            self.logger.info(f"🔄 使用SOCKS5代理: {settings.SOCKS5_PROXY}")
+
+        return proxies if proxies else None
+
     async def get_token(self) -> str:
         """获取认证令牌"""
         # 如果启用匿名模式，只尝试获取访客令牌
@@ -193,8 +214,11 @@ class ZAIProvider(BaseProvider):
                     headers = get_zai_dynamic_headers()
                     self.logger.debug(f"尝试获取访客令牌 (第{retry_count + 1}次): {self.auth_url}")
                     self.logger.debug(f"请求头: {headers}")
-                    
-                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+
+                    # Get proxy configuration
+                    proxies = self._get_proxy_config()
+
+                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, proxies=proxies) as client:
                         response = await client.get(self.auth_url, headers=headers)
                         
                         self.logger.debug(f"响应状态码: {response.status_code}")
@@ -214,8 +238,12 @@ class ZAIProvider(BaseProvider):
                                 return token
                             else:
                                 self.logger.warning(f"响应中未找到token字段: {data}")
+                        elif response.status_code == 405:
+                            # WAF拦截
+                            self.logger.error(f"🚫 请求被WAF拦截 (状态码405),请求头可能被识别为异常,请稍后重试...")
+                            break
                         else:
-                            self.logger.warning(f"HTTP请求失败，状态码: {response.status_code}")
+                            self.logger.warning(f"HTTP请求失败,状态码: {response.status_code}")
                             try:
                                 error_data = response.json()
                                 self.logger.warning(f"错误响应: {error_data}")
@@ -312,8 +340,11 @@ class ZAIProvider(BaseProvider):
                 "Authorization": f"Bearer {token}",
             }
 
+            # Get proxy configuration
+            proxies = self._get_proxy_config()
+
             # 使用 httpx 上传文件
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, proxies=proxies) as client:
                 files = {
                     "file": (filename, image_data, mime_type)
                 }
@@ -684,8 +715,11 @@ class ZAIProvider(BaseProvider):
                 # 流式响应
                 return self._create_stream_response(request, transformed)
             else:
+                # Get proxy configuration
+                proxies = self._get_proxy_config()
+
                 # 非流式响应
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient(timeout=30.0, proxies=proxies) as client:
                     response = await client.post(
                         transformed["url"],
                         headers=transformed["headers"],
@@ -712,9 +746,13 @@ class ZAIProvider(BaseProvider):
 
         current_token = transformed.get("token", "")
         try:
+            # Get proxy configuration
+            proxies = self._get_proxy_config()
+
             async with httpx.AsyncClient(
                 timeout=60.0,
                 http2=True,
+                proxies=proxies,
             ) as client:
                 self.logger.info(f"🎯 发送请求到 Z.AI: {transformed['url']}")
                 # self.logger.info(f"📦 请求体 model: {transformed['body']['model']}")
@@ -731,13 +769,25 @@ class ZAIProvider(BaseProvider):
                         error_msg = error_text.decode('utf-8', errors='ignore')
                         if error_msg:
                             self.logger.error(f"❌ 错误详情: {error_msg}")
-                        error_response = {
-                            "error": {
-                                "message": f"Upstream error: {response.status_code}",
-                                "type": "upstream_error",
-                                "code": response.status_code
+
+                        # 特殊处理 405 状态码(WAF拦截)
+                        if response.status_code == 405:
+                            self.logger.error(f"🚫 请求被上游WAF拦截,可能是请求头或签名异常,请稍后重试...")
+                            error_response = {
+                                "error": {
+                                    "message": "请求被上游WAF拦截(405 Method Not Allowed),可能是请求头或签名异常,请稍后重试...",
+                                    "type": "waf_blocked",
+                                    "code": 405
+                                }
                             }
-                        }
+                        else:
+                            error_response = {
+                                "error": {
+                                    "message": f"Upstream error: {response.status_code}",
+                                    "type": "upstream_error",
+                                    "code": response.status_code
+                                }
+                            }
                         yield f"data: {json.dumps(error_response)}\n\n"
                         yield "data: [DONE]\n\n"
                         return
