@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     LISTEN_PORT: int = int(os.getenv("LISTEN_PORT", "8080"))
     DEBUG_LOGGING: bool = os.getenv("DEBUG_LOGGING", "true").lower() == "true"
     SERVICE_NAME: str = os.getenv("SERVICE_NAME", "z-ai2api-server")
+    ROOT_PATH: str = os.getenv("ROOT_PATH", "")  # For Nginx reverse proxy path prefix, e.g., "/api" or "/path-prefix"
 
     ANONYMOUS_MODE: bool = os.getenv("ANONYMOUS_MODE", "true").lower() == "true"
     TOOL_SUPPORT: bool = os.getenv("TOOL_SUPPORT", "true").lower() == "true"
