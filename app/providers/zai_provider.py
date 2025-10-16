@@ -964,10 +964,9 @@ class ZAIProvider(BaseProvider):
 
                                         # 尝试从缓冲区提取 tool_calls
                                         tool_calls = None
-                                        cleaned_content = buffered_content
 
                                         if has_tools:
-                                            tool_calls, cleaned_content = parse_and_extract_tool_calls(buffered_content)
+                                            tool_calls, _ = parse_and_extract_tool_calls(buffered_content)
 
                                         if tool_calls:
                                             # 发现工具调用
@@ -1014,28 +1013,8 @@ class ZAIProvider(BaseProvider):
                                             yield "data: [DONE]\n\n"
 
                                         else:
-                                            # 没有工具调用,正常返回内容
-                                            # 处理思考结束和答案开始
-                                            if edit_content and "</details>\n" in edit_content:
-                                                if has_thinking:
-                                                    # 发送思考签名
-                                                    thinking_signature = str(int(time.time() * 1000))
-                                                    sig_chunk = self.create_openai_chunk(
-                                                        chat_id,
-                                                        model,
-                                                        {
-                                                            "role": "assistant",
-                                                            "thinking": {
-                                                                "content": "",
-                                                                "signature": thinking_signature,
-                                                            }
-                                                        }
-                                                    )
-                                                    yield await self.format_sse_chunk(sig_chunk)
-
-                                                # 提取答案内容
-                                                cleaned_content = edit_content.split("</details>\n")[-1]
-
+                                            # 没有工具调用,流式内容已经在上面的增量输出中发送过了
+                                            # 这里只需要发送 finish 块即可,不要再次发送内容
                                             if not has_sent_role and not has_thinking:
                                                 role_chunk = self.create_openai_chunk(
                                                     chat_id,
@@ -1044,17 +1023,6 @@ class ZAIProvider(BaseProvider):
                                                 )
                                                 yield await self.format_sse_chunk(role_chunk)
                                                 has_sent_role = True
-
-                                            if cleaned_content:
-                                                content_chunk = self.create_openai_chunk(
-                                                    chat_id,
-                                                    model,
-                                                    {
-                                                        "role": "assistant",
-                                                        "content": cleaned_content
-                                                    }
-                                                )
-                                                yield await self.format_sse_chunk(content_chunk)
 
                                             finish_chunk = self.create_openai_chunk(
                                                 chat_id,
