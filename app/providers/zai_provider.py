@@ -181,26 +181,24 @@ class ZAIProvider(BaseProvider):
             settings.GLM46_ADVANCED_SEARCH_MODEL,
         ]
 
-    def _get_proxy_config(self) -> Optional[Dict[str, str]]:
+    def _get_proxy_config(self) -> Optional[str]:
         """Get proxy configuration from settings"""
-        proxies = {}
-
+        # In httpx 0.28.1, proxy parameter expects a single URL string
         # Support HTTP_PROXY, HTTPS_PROXY and SOCKS5_PROXY
-        if settings.HTTP_PROXY:
-            proxies["http://"] = settings.HTTP_PROXY
-            self.logger.info(f"🔄 使用HTTP代理: {settings.HTTP_PROXY}")
-
+        
         if settings.HTTPS_PROXY:
-            proxies["https://"] = settings.HTTPS_PROXY
             self.logger.info(f"🔄 使用HTTPS代理: {settings.HTTPS_PROXY}")
-
+            return settings.HTTPS_PROXY
+            
+        if settings.HTTP_PROXY:
+            self.logger.info(f"🔄 使用HTTP代理: {settings.HTTP_PROXY}")
+            return settings.HTTP_PROXY
+            
         if settings.SOCKS5_PROXY:
-            # SOCKS5 proxy for both HTTP and HTTPS
-            proxies["http://"] = settings.SOCKS5_PROXY
-            proxies["https://"] = settings.SOCKS5_PROXY
             self.logger.info(f"🔄 使用SOCKS5代理: {settings.SOCKS5_PROXY}")
+            return settings.SOCKS5_PROXY
 
-        return proxies if proxies else None
+        return None
 
     async def get_token(self) -> str:
         """获取认证令牌"""
@@ -218,7 +216,7 @@ class ZAIProvider(BaseProvider):
                     # Get proxy configuration
                     proxies = self._get_proxy_config()
 
-                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, proxies=proxies) as client:
+                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, proxy=proxies) as client:
                         response = await client.get(self.auth_url, headers=headers)
                         
                         self.logger.debug(f"响应状态码: {response.status_code}")
@@ -344,7 +342,7 @@ class ZAIProvider(BaseProvider):
             proxies = self._get_proxy_config()
 
             # 使用 httpx 上传文件
-            async with httpx.AsyncClient(timeout=30.0, proxies=proxies) as client:
+            async with httpx.AsyncClient(timeout=30.0, proxy=proxies) as client:
                 files = {
                     "file": (filename, image_data, mime_type)
                 }
@@ -719,7 +717,7 @@ class ZAIProvider(BaseProvider):
                 proxies = self._get_proxy_config()
 
                 # 非流式响应
-                async with httpx.AsyncClient(timeout=30.0, proxies=proxies) as client:
+                async with httpx.AsyncClient(timeout=30.0, proxy=proxies) as client:
                     response = await client.post(
                         transformed["url"],
                         headers=transformed["headers"],
@@ -752,7 +750,7 @@ class ZAIProvider(BaseProvider):
             async with httpx.AsyncClient(
                 timeout=60.0,
                 http2=True,
-                proxies=proxies,
+                proxy=proxies,
             ) as client:
                 self.logger.info(f"🎯 发送请求到 Z.AI: {transformed['url']}")
                 # self.logger.info(f"📦 请求体 model: {transformed['body']['model']}")
