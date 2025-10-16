@@ -12,6 +12,7 @@ import httpx
 import hmac
 import hashlib
 import base64
+import asyncio
 from urllib.parse import urlencode
 import os
 import uuid
@@ -184,25 +185,63 @@ class ZAIProvider(BaseProvider):
         """获取认证令牌"""
         # 如果启用匿名模式，只尝试获取访客令牌
         if settings.ANONYMOUS_MODE:
-            try:
-                headers = get_zai_dynamic_headers()
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(self.auth_url, headers=headers, timeout=10.0)
-                    if response.status_code == 200:
-                        data = response.json()
-                        token = data.get("token", "")
-                        if token:
-                            # 判断令牌类型（通过检查邮箱或user_id）
-                            email = data.get("email", "")
-                            is_guest = "@guest.com" in email or "Guest-" in email
-                            token_type = "匿名用户" if is_guest else "认证用户"
-                            self.logger.debug(f"获取令牌成功 ({token_type}): {token[:20]}...")
-                            return token
-            except Exception as e:
-                self.logger.warning(f"异步获取访客令牌失败: {e}")
+            max_retries = 3
+            retry_count = 0
+            
+            while retry_count < max_retries:
+                try:
+                    headers = get_zai_dynamic_headers()
+                    self.logger.debug(f"尝试获取访客令牌 (第{retry_count + 1}次): {self.auth_url}")
+                    self.logger.debug(f"请求头: {headers}")
+                    
+                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                        response = await client.get(self.auth_url, headers=headers)
+                        
+                        self.logger.debug(f"响应状态码: {response.status_code}")
+                        self.logger.debug(f"响应头: {dict(response.headers)}")
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            self.logger.debug(f"响应数据: {data}")
+                            
+                            token = data.get("token", "")
+                            if token:
+                                # 判断令牌类型（通过检查邮箱或user_id）
+                                email = data.get("email", "")
+                                is_guest = "@guest.com" in email or "Guest-" in email
+                                token_type = "匿名用户" if is_guest else "认证用户"
+                                self.logger.info(f"✅ 获取令牌成功 ({token_type}): {token[:20]}...")
+                                return token
+                            else:
+                                self.logger.warning(f"响应中未找到token字段: {data}")
+                        else:
+                            self.logger.warning(f"HTTP请求失败，状态码: {response.status_code}")
+                            try:
+                                error_data = response.json()
+                                self.logger.warning(f"错误响应: {error_data}")
+                            except:
+                                self.logger.warning(f"错误响应文本: {response.text}")
+                                
+                except httpx.TimeoutException as e:
+                    self.logger.warning(f"请求超时 (第{retry_count + 1}次): {e}")
+                except httpx.ConnectError as e:
+                    self.logger.warning(f"连接错误 (第{retry_count + 1}次): {e}")
+                except httpx.HTTPStatusError as e:
+                    self.logger.warning(f"HTTP状态错误 (第{retry_count + 1}次): {e}")
+                except json.JSONDecodeError as e:
+                    self.logger.warning(f"JSON解析错误 (第{retry_count + 1}次): {e}")
+                except Exception as e:
+                    self.logger.warning(f"异步获取访客令牌失败 (第{retry_count + 1}次): {e}")
+                    import traceback
+                    self.logger.debug(f"错误堆栈: {traceback.format_exc()}")
+                
+                retry_count += 1
+                if retry_count < max_retries:
+                    self.logger.info(f"等待2秒后重试...")
+                    await asyncio.sleep(2)
 
             # 匿名模式下，如果获取访客令牌失败，直接返回空
-            self.logger.error("❌ 匿名模式下获取访客令牌失败")
+            self.logger.error("❌ 匿名模式下获取访客令牌失败，已重试3次")
             return ""
 
         # 非匿名模式：首先使用token池获取备份令牌
