@@ -1,189 +1,108 @@
-# Docker 部署指南
+# Docker 部署文档
 
-## 快速开始
-
-### 1. 构建并启动服务
+## 快速部署
 
 ```bash
+# 进入部署目录
 cd deploy
+
+# 启动服务
 docker compose up -d
+
+# 查看日志
+docker compose logs -f api-server
 ```
 
-### 2. 查看日志
+服务将在 `http://localhost:8080` 启动。
 
-```bash
-docker compose logs -f
-```
+## 架构说明
 
-### 3. 停止服务
+### 持久化存储
 
-```bash
-docker compose down
-```
-
-## 数据持久化
-
-### 目录结构
-
-容器启动后会在 `deploy/` 目录下自动创建以下目录:
-
-```
-deploy/
-├── data/              # 数据库文件存储目录
-│   └── tokens.db      # SQLite 数据库文件
-├── logs/              # 日志文件存储目录
-└── docker-compose.yml
-```
-
-### 数据卷映射
-
-- `./data:/app/data` - 数据库持久化存储
-- `./logs:/app/logs` - 日志持久化存储
-
-**重要**: 这些目录会自动创建,数据在容器重启或重建后仍然保留。
-
-## 环境变量配置
-
-在 `docker-compose.yml` 中可以配置以下环境变量:
-
-```yaml
-environment:
-  # 管理后台密码
-  - ADMIN_PASSWORD=admin123
-
-  # API 认证密钥
-  - AUTH_TOKEN=sk-your-api-key
-
-  # 是否跳过 API Key 验证
-  - SKIP_AUTH_TOKEN=false
-
-  # 调试日志
-  - DEBUG_LOGGING=true
-
-  # 匿名模式
-  - ANONYMOUS_MODE=true
-
-  # Function Call 功能开关
-  - TOOL_SUPPORT=true
-
-  # 工具调用扫描限制(字符数)
-  - SCAN_LIMIT=200000
-
-  # 数据库路径(已配置持久化)
-  - DB_PATH=/app/data/tokens.db
-```
-
-## 故障排查
-
-### 问题: 数据库初始化失败 "unable to open database file"
-
-**原因**:
-1. 数据目录权限问题
-2. 卷映射未正确配置
-3. 容器内目录不存在
-
-**解决方案**:
-```bash
-# 1. 停止容器
-docker compose down
-
-# 2. 确保宿主机目录存在并有正确权限
-mkdir -p ./data ./logs
-chmod 755 ./data ./logs
-
-# 3. 重新构建并启动
-docker compose up -d --build
-
-# 4. 查看日志确认启动成功
-docker compose logs -f
-```
-
-### 问题: 数据在容器重启后丢失
-
-**检查**:
-1. 确认 `docker-compose.yml` 中有正确的卷映射
-2. 检查 `./data` 目录是否存在且包含 `tokens.db` 文件
-
-```bash
-# 查看数据目录
-ls -la ./data/
-
-# 应该看到 tokens.db 文件
-```
-
-### 问题: 权限被拒绝
-
-如果遇到权限问题,可以检查文件权限:
-
-```bash
-# 查看目录权限
-ls -ld ./data ./logs
-
-# 修正权限
-chmod -R 755 ./data ./logs
-```
-
-## 高级配置
-
-### 自定义数据库位置
-
-如果想使用不同的数据库路径,可以修改 `docker-compose.yml`:
+容器使用卷映射实现数据持久化:
 
 ```yaml
 volumes:
-  - /opt/1panel/docker/compose/k2think/data:/app/data  # 自定义路径
-
-environment:
-  - DB_PATH=/app/data/tokens.db
+  - ./data:/app/data      # 数据库存储 (tokens.db)
+  - ./logs:/app/logs      # 应用日志
 ```
 
-### 使用已有数据库
+**目录结构**:
+```
+deploy/
+├── data/
+│   └── tokens.db          # SQLite 数据库 (自动创建)
+├── logs/                  # 应用日志 (自动创建)
+├── docker-compose.yml
+├── Dockerfile
+└── README_DOCKER.md
+```
 
-如果已经有 `tokens.db` 文件,将其放入 `deploy/data/` 目录即可:
+### 环境变量
+
+核心配置参数 (在 `docker-compose.yml` 中设置):
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `DB_PATH` | `/app/data/tokens.db` | 数据库文件路径 |
+| `ADMIN_PASSWORD` | `admin123` | 管理后台密码 |
+| `AUTH_TOKEN` | `sk-your-api-key` | API 认证密钥 |
+| `SKIP_AUTH_TOKEN` | `false` | 跳过 API 验证 |
+| `ANONYMOUS_MODE` | `true` | 匿名访问模式 |
+| `DEBUG_LOGGING` | `true` | 调试日志开关 |
+| `TOOL_SUPPORT` | `true` | Function Call 支持 |
+
+**生产环境建议**:
+- 修改 `ADMIN_PASSWORD` 和 `AUTH_TOKEN`
+- 设置 `DEBUG_LOGGING=false`
+- 设置 `ANONYMOUS_MODE=false`
+
+## 运维操作
+
+### 服务管理
 
 ```bash
-# 复制已有数据库
-cp /path/to/existing/tokens.db ./data/
-
-# 设置权限
-chmod 644 ./data/tokens.db
-
-# 启动容器
+# 启动服务
 docker compose up -d
-```
 
-## 健康检查
+# 停止服务
+docker compose down
 
-容器配置了健康检查,每30秒检查一次服务状态:
+# 重启服务
+docker compose restart
 
-```bash
-# 查看健康状态
+# 查看状态
 docker compose ps
 
-# 应该看到 STATUS 列显示 "healthy"
+# 实时日志
+docker compose logs -f
 ```
 
-## 访问服务
+### 更新应用
 
-- **API 端点**: http://localhost:8080
-- **管理后台**: http://localhost:8080/admin
-- **API 文档**: http://localhost:8080/docs
-- **模型列表**: http://localhost:8080/v1/models
+```bash
+# 拉取最新代码
+git pull
 
-## 备份和恢复
+# 重新构建并启动 (数据会保留)
+docker compose up -d --build
 
-### 备份数据
+# 清理旧镜像
+docker image prune -f
+```
 
+### 数据备份与恢复
+
+**备份**:
 ```bash
 # 备份数据库
 cp ./data/tokens.db ./data/tokens.db.backup.$(date +%Y%m%d_%H%M%S)
 
-# 或创建完整备份
+# 完整备份
 tar -czf backup_$(date +%Y%m%d_%H%M%S).tar.gz ./data ./logs
 ```
 
-### 恢复数据
-
+**恢复**:
 ```bash
 # 停止服务
 docker compose down
@@ -195,17 +114,191 @@ cp ./data/tokens.db.backup.20250116_120000 ./data/tokens.db
 docker compose up -d
 ```
 
-## 更新应用
+### 数据库迁移
+
+如需从其他位置迁移现有数据库:
 
 ```bash
-# 停止服务
+# 使用迁移脚本
+./migrate_db.sh /path/to/existing/tokens.db
+
+# 或手动复制
+cp /opt/1panel/docker/compose/k2think/tokens.db ./data/
+chmod 644 ./data/tokens.db
+
+# 启动服务
+docker compose up -d
+```
+
+## 故障排查
+
+### 数据库初始化失败
+
+**错误**: `unable to open database file`
+
+**原因**: 目录权限或卷映射问题
+
+**解决**:
+```bash
+# 停止容器
 docker compose down
 
-# 拉取最新代码
-git pull
+# 确保目录存在
+mkdir -p ./data ./logs
+
+# 设置权限
+chmod 755 ./data ./logs
 
 # 重新构建并启动
 docker compose up -d --build
-
-# 数据会自动保留
 ```
+
+### 容器无法启动
+
+**检查步骤**:
+```bash
+# 查看详细日志
+docker compose logs api-server
+
+# 检查容器状态
+docker compose ps
+
+# 验证配置文件
+docker compose config
+```
+
+### 端口冲突
+
+如端口 8080 被占用,修改 `docker-compose.yml`:
+```yaml
+ports:
+  - "8081:8080"  # 映射到宿主机 8081 端口
+```
+
+### 健康检查失败
+
+```bash
+# 检查健康状态
+docker compose ps
+
+# 手动测试接口
+curl http://localhost:8080/v1/models
+
+# 进入容器排查
+docker exec -it z-ai-api-server bash
+```
+
+## API 访问
+
+| 端点 | 地址 | 说明 |
+|------|------|------|
+| API 根路径 | `http://localhost:8080` | OpenAI 兼容 API |
+| 模型列表 | `http://localhost:8080/v1/models` | 获取可用模型 |
+| 管理后台 | `http://localhost:8080/admin` | Web 管理界面 |
+| API 文档 | `http://localhost:8080/docs` | OpenAPI/Swagger 文档 |
+| 健康检查 | `http://localhost:8080/v1/models` | 服务健康状态 |
+
+## 高级配置
+
+### 自定义数据库路径
+
+修改 `docker-compose.yml` 使用外部路径:
+
+```yaml
+volumes:
+  - /opt/mydata:/app/data  # 使用绝对路径
+
+environment:
+  - DB_PATH=/app/data/tokens.db
+```
+
+### 使用 .env 文件
+
+创建 `.env` 文件 (基于 `.env.example`):
+
+```bash
+cp .env.example .env
+# 编辑配置
+vim .env
+```
+
+修改 `docker-compose.yml`:
+```yaml
+services:
+  api-server:
+    env_file: .env
+```
+
+### 启用日志轮转
+
+在生产环境配置 Docker 日志驱动:
+
+```yaml
+services:
+  api-server:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+```
+
+### 资源限制
+
+限制容器资源使用:
+
+```yaml
+services:
+  api-server:
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+```
+
+## 监控与日志
+
+### 查看日志
+
+```bash
+# 实时日志
+docker compose logs -f
+
+# 最近100行
+docker compose logs --tail=100
+
+# 特定时间段
+docker compose logs --since 30m
+
+# 导出日志
+docker compose logs > app.log
+```
+
+### 容器指标
+
+```bash
+# 资源使用情况
+docker stats z-ai-api-server
+
+# 容器详情
+docker inspect z-ai-api-server
+```
+
+## 安全建议
+
+1. **修改默认密码**: 更改 `ADMIN_PASSWORD` 和 `AUTH_TOKEN`
+2. **限制网络访问**: 生产环境使用反向代理 (Nginx/Caddy)
+3. **启用 HTTPS**: 配置 SSL 证书
+4. **定期备份**: 自动化数据库备份任务
+5. **日志审计**: 定期检查 `request_logs` 表
+6. **最小权限**: 避免以 root 运行容器
+
+## 参考资料
+
+- [Docker Compose 文档](https://docs.docker.com/compose/)
+- [项目主 README](../README.md)
+- [配置示例](.env.example)
