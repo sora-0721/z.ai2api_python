@@ -1,11 +1,16 @@
 services:
   api-server:
-    build: 
+    build:
       context: ..
       dockerfile: deploy/Dockerfile
     container_name: z-ai-api-server
     ports:
       - "8080:8080"
+    volumes:
+      # 数据库持久化存储
+      - ./data:/app/data
+      # 日志持久化存储(可选)
+      - ./logs:/app/logs
     environment:
       - ADMIN_PASSWORD=admin123
       # Auth Configuration
@@ -18,8 +23,10 @@ services:
       - ANONYMOUS_MODE=true
       # Function Call 功能开关
       - TOOL_SUPPORT=true
-      # 工具调用扫描限制（字符数）
+      # 工具调用扫描限制(字符数)
       - SCAN_LIMIT=200000
+      # 数据库路径 - 使用持久化卷
+      - DB_PATH=/app/data/tokens.db
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/v1/models"]
