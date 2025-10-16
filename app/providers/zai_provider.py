@@ -118,23 +118,41 @@ def _extract_user_id_from_token(token: str) -> str:
 
 
 def generate_signature(message_text: str, request_id: str, timestamp_ms: int, user_id: str, secret: str = "junjie") -> str:
-    """Dual-layer HMAC-SHA256 signature.
+    """Dual-layer HMAC-SHA256 signature matching Z.AI's zs function.
 
-    Layer1: derived key = HMAC(secret, window_index)
-    Layer2: signature = HMAC(derived_key, canonical_string)
-    canonical_string = "requestId,<id>,timestamp,<ts>,user_id,<uid>|<msg>|<ts>"
+    - e: requestId,<id>,timestamp,<ts>,user_id,<uid>
+    - t: message_text
+    - s/i: timestamp_ms
+    - w: base64(utf8_encode(t))
+    - c: e|w|i
+    - E: floor(timestamp_ms / 300000)
+    - A: HMAC_SHA256(secret, E)
+    - k: HMAC_SHA256(A, c)
     """
-    r = str(timestamp_ms)
+    # e = requestId,<id>,timestamp,<ts>,user_id,<uid>
     e = f"requestId,{request_id},timestamp,{timestamp_ms},user_id,{user_id}"
-    t = message_text or ""
-    # Add content_base64 processing for new signature algorithm
-    content_base64 = base64.b64encode(t.encode('utf-8')).decode('ascii')
-    i = f"{e}|{content_base64}|{r}"
 
+    # t = message_text, encode to UTF-8 then base64 (matching btoa behavior)
+    t = message_text or ""
+    t_bytes = t.encode('utf-8')
+    w = base64.b64encode(t_bytes).decode('ascii')
+
+    # i = timestamp string
+    i = str(timestamp_ms)
+
+    # c = e|w|i
+    c = f"{e}|{w}|{i}"
+
+    # E = floor(timestamp_ms / (5 * 60 * 1000))
     window_index = timestamp_ms // (5 * 60 * 1000)
+
+    # A = HMAC_SHA256(secret, window_index)
     root_key = (secret or "junjie").encode("utf-8")
     derived_hex = hmac.new(root_key, str(window_index).encode("utf-8"), hashlib.sha256).hexdigest()
-    signature = hmac.new(derived_hex.encode("utf-8"), i.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    # k = HMAC_SHA256(A, c)
+    signature = hmac.new(derived_hex.encode("utf-8"), c.encode("utf-8"), hashlib.sha256).hexdigest()
+
     return signature
 
 
