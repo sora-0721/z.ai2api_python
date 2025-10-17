@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     LISTEN_PORT: int = int(os.getenv("LISTEN_PORT", "8080"))
     DEBUG_LOGGING: bool = os.getenv("DEBUG_LOGGING", "true").lower() == "true"
     SERVICE_NAME: str = os.getenv("SERVICE_NAME", "z-ai2api-server")
+    ROOT_PATH: str = os.getenv("ROOT_PATH", "")  # For Nginx reverse proxy path prefix, e.g., "/api" or "/path-prefix"
 
     ANONYMOUS_MODE: bool = os.getenv("ANONYMOUS_MODE", "true").lower() == "true"
     TOOL_SUPPORT: bool = os.getenv("TOOL_SUPPORT", "true").lower() == "true"
@@ -68,6 +69,11 @@ class Settings(BaseSettings):
 
     # Provider Configuration
     DEFAULT_PROVIDER: str = os.getenv("DEFAULT_PROVIDER", "zai")  # 默认提供商：zai/k2think/longcat
+
+    # Proxy Configuration
+    HTTP_PROXY: Optional[str] = os.getenv("HTTP_PROXY")  # HTTP代理,格式: http://user:pass@host:port 或 http://host:port
+    HTTPS_PROXY: Optional[str] = os.getenv("HTTPS_PROXY")  # HTTPS代理,格式同上
+    SOCKS5_PROXY: Optional[str] = os.getenv("SOCKS5_PROXY")  # SOCKS5代理,格式: socks5://user:pass@host:port
 
     # Admin Panel Authentication
     ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin123")  # 管理后台密码

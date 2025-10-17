@@ -12,6 +12,7 @@ import httpx
 import hmac
 import hashlib
 import base64
+import asyncio
 from urllib.parse import urlencode
 import os
 import uuid
@@ -117,23 +118,41 @@ def _extract_user_id_from_token(token: str) -> str:
 
 
 def generate_signature(message_text: str, request_id: str, timestamp_ms: int, user_id: str, secret: str = "junjie") -> str:
-    """Dual-layer HMAC-SHA256 signature.
+    """Dual-layer HMAC-SHA256 signature matching Z.AI's zs function.
 
-    Layer1: derived key = HMAC(secret, window_index)
-    Layer2: signature = HMAC(derived_key, canonical_string)
-    canonical_string = "requestId,<id>,timestamp,<ts>,user_id,<uid>|<msg>|<ts>"
+    - e: requestId,<id>,timestamp,<ts>,user_id,<uid>
+    - t: message_text
+    - s/i: timestamp_ms
+    - w: base64(utf8_encode(t))
+    - c: e|w|i
+    - E: floor(timestamp_ms / 300000)
+    - A: HMAC_SHA256(secret, E)
+    - k: HMAC_SHA256(A, c)
     """
-    r = str(timestamp_ms)
+    # e = requestId,<id>,timestamp,<ts>,user_id,<uid>
     e = f"requestId,{request_id},timestamp,{timestamp_ms},user_id,{user_id}"
-    t = message_text or ""
-    # Add content_base64 processing for new signature algorithm
-    content_base64 = base64.b64encode(t.encode('utf-8')).decode('ascii')
-    i = f"{e}|{content_base64}|{r}"
 
+    # t = message_text, encode to UTF-8 then base64 (matching btoa behavior)
+    t = message_text or ""
+    t_bytes = t.encode('utf-8')
+    w = base64.b64encode(t_bytes).decode('ascii')
+
+    # i = timestamp string
+    i = str(timestamp_ms)
+
+    # c = e|w|i
+    c = f"{e}|{w}|{i}"
+
+    # E = floor(timestamp_ms / (5 * 60 * 1000))
     window_index = timestamp_ms // (5 * 60 * 1000)
+
+    # A = HMAC_SHA256(secret, window_index)
     root_key = (secret or "junjie").encode("utf-8")
     derived_hex = hmac.new(root_key, str(window_index).encode("utf-8"), hashlib.sha256).hexdigest()
-    signature = hmac.new(derived_hex.encode("utf-8"), i.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    # k = HMAC_SHA256(A, c)
+    signature = hmac.new(derived_hex.encode("utf-8"), c.encode("utf-8"), hashlib.sha256).hexdigest()
+
     return signature
 
 
@@ -179,30 +198,94 @@ class ZAIProvider(BaseProvider):
             settings.GLM46_SEARCH_MODEL,
             settings.GLM46_ADVANCED_SEARCH_MODEL,
         ]
-    
+
+    def _get_proxy_config(self) -> Optional[str]:
+        """Get proxy configuration from settings"""
+        # In httpx 0.28.1, proxy parameter expects a single URL string
+        # Support HTTP_PROXY, HTTPS_PROXY and SOCKS5_PROXY
+        
+        if settings.HTTPS_PROXY:
+            self.logger.info(f"🔄 使用HTTPS代理: {settings.HTTPS_PROXY}")
+            return settings.HTTPS_PROXY
+            
+        if settings.HTTP_PROXY:
+            self.logger.info(f"🔄 使用HTTP代理: {settings.HTTP_PROXY}")
+            return settings.HTTP_PROXY
+            
+        if settings.SOCKS5_PROXY:
+            self.logger.info(f"🔄 使用SOCKS5代理: {settings.SOCKS5_PROXY}")
+            return settings.SOCKS5_PROXY
+
+        return None
+
     async def get_token(self) -> str:
         """获取认证令牌"""
         # 如果启用匿名模式，只尝试获取访客令牌
         if settings.ANONYMOUS_MODE:
-            try:
-                headers = get_zai_dynamic_headers()
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(self.auth_url, headers=headers, timeout=10.0)
-                    if response.status_code == 200:
-                        data = response.json()
-                        token = data.get("token", "")
-                        if token:
-                            # 判断令牌类型（通过检查邮箱或user_id）
-                            email = data.get("email", "")
-                            is_guest = "@guest.com" in email or "Guest-" in email
-                            token_type = "匿名用户" if is_guest else "认证用户"
-                            self.logger.debug(f"获取令牌成功 ({token_type}): {token[:20]}...")
-                            return token
-            except Exception as e:
-                self.logger.warning(f"异步获取访客令牌失败: {e}")
+            max_retries = 3
+            retry_count = 0
+            
+            while retry_count < max_retries:
+                try:
+                    headers = get_zai_dynamic_headers()
+                    self.logger.debug(f"尝试获取访客令牌 (第{retry_count + 1}次): {self.auth_url}")
+                    self.logger.debug(f"请求头: {headers}")
+
+                    # Get proxy configuration
+                    proxies = self._get_proxy_config()
+
+                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, proxy=proxies) as client:
+                        response = await client.get(self.auth_url, headers=headers)
+                        
+                        self.logger.debug(f"响应状态码: {response.status_code}")
+                        self.logger.debug(f"响应头: {dict(response.headers)}")
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            self.logger.debug(f"响应数据: {data}")
+                            
+                            token = data.get("token", "")
+                            if token:
+                                # 判断令牌类型（通过检查邮箱或user_id）
+                                email = data.get("email", "")
+                                is_guest = "@guest.com" in email or "Guest-" in email
+                                token_type = "匿名用户" if is_guest else "认证用户"
+                                self.logger.info(f"✅ 获取令牌成功 ({token_type}): {token[:20]}...")
+                                return token
+                            else:
+                                self.logger.warning(f"响应中未找到token字段: {data}")
+                        elif response.status_code == 405:
+                            # WAF拦截
+                            self.logger.error(f"🚫 请求被WAF拦截 (状态码405),请求头可能被识别为异常,请稍后重试...")
+                            break
+                        else:
+                            self.logger.warning(f"HTTP请求失败,状态码: {response.status_code}")
+                            try:
+                                error_data = response.json()
+                                self.logger.warning(f"错误响应: {error_data}")
+                            except:
+                                self.logger.warning(f"错误响应文本: {response.text}")
+                                
+                except httpx.TimeoutException as e:
+                    self.logger.warning(f"请求超时 (第{retry_count + 1}次): {e}")
+                except httpx.ConnectError as e:
+                    self.logger.warning(f"连接错误 (第{retry_count + 1}次): {e}")
+                except httpx.HTTPStatusError as e:
+                    self.logger.warning(f"HTTP状态错误 (第{retry_count + 1}次): {e}")
+                except json.JSONDecodeError as e:
+                    self.logger.warning(f"JSON解析错误 (第{retry_count + 1}次): {e}")
+                except Exception as e:
+                    self.logger.warning(f"异步获取访客令牌失败 (第{retry_count + 1}次): {e}")
+                    import traceback
+                    self.logger.debug(f"错误堆栈: {traceback.format_exc()}")
+                
+                retry_count += 1
+                if retry_count < max_retries:
+                    self.logger.info(f"等待2秒后重试...")
+                    await asyncio.sleep(2)
 
             # 匿名模式下，如果获取访客令牌失败，直接返回空
-            self.logger.error("❌ 匿名模式下获取访客令牌失败")
+            self.logger.error("❌ 匿名模式下获取访客令牌失败，已重试3次")
             return ""
 
         # 非匿名模式：首先使用token池获取备份令牌
@@ -273,8 +356,11 @@ class ZAIProvider(BaseProvider):
                 "Authorization": f"Bearer {token}",
             }
 
+            # Get proxy configuration
+            proxies = self._get_proxy_config()
+
             # 使用 httpx 上传文件
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, proxy=proxies) as client:
                 files = {
                     "file": (filename, image_data, mime_type)
                 }
@@ -645,8 +731,11 @@ class ZAIProvider(BaseProvider):
                 # 流式响应
                 return self._create_stream_response(request, transformed)
             else:
+                # Get proxy configuration
+                proxies = self._get_proxy_config()
+
                 # 非流式响应
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient(timeout=30.0, proxy=proxies) as client:
                     response = await client.post(
                         transformed["url"],
                         headers=transformed["headers"],
@@ -673,9 +762,13 @@ class ZAIProvider(BaseProvider):
 
         current_token = transformed.get("token", "")
         try:
+            # Get proxy configuration
+            proxies = self._get_proxy_config()
+
             async with httpx.AsyncClient(
                 timeout=60.0,
                 http2=True,
+                proxy=proxies,
             ) as client:
                 self.logger.info(f"🎯 发送请求到 Z.AI: {transformed['url']}")
                 # self.logger.info(f"📦 请求体 model: {transformed['body']['model']}")
@@ -692,13 +785,25 @@ class ZAIProvider(BaseProvider):
                         error_msg = error_text.decode('utf-8', errors='ignore')
                         if error_msg:
                             self.logger.error(f"❌ 错误详情: {error_msg}")
-                        error_response = {
-                            "error": {
-                                "message": f"Upstream error: {response.status_code}",
-                                "type": "upstream_error",
-                                "code": response.status_code
+
+                        # 特殊处理 405 状态码(WAF拦截)
+                        if response.status_code == 405:
+                            self.logger.error(f"🚫 请求被上游WAF拦截,可能是请求头或签名异常,请稍后重试...")
+                            error_response = {
+                                "error": {
+                                    "message": "请求被上游WAF拦截(405 Method Not Allowed),可能是请求头或签名异常,请稍后重试...",
+                                    "type": "waf_blocked",
+                                    "code": 405
+                                }
                             }
-                        }
+                        else:
+                            error_response = {
+                                "error": {
+                                    "message": f"Upstream error: {response.status_code}",
+                                    "type": "upstream_error",
+                                    "code": response.status_code
+                                }
+                            }
                         yield f"data: {json.dumps(error_response)}\n\n"
                         yield "data: [DONE]\n\n"
                         return
@@ -859,10 +964,9 @@ class ZAIProvider(BaseProvider):
 
                                         # 尝试从缓冲区提取 tool_calls
                                         tool_calls = None
-                                        cleaned_content = buffered_content
 
                                         if has_tools:
-                                            tool_calls, cleaned_content = parse_and_extract_tool_calls(buffered_content)
+                                            tool_calls, _ = parse_and_extract_tool_calls(buffered_content)
 
                                         if tool_calls:
                                             # 发现工具调用
@@ -909,28 +1013,8 @@ class ZAIProvider(BaseProvider):
                                             yield "data: [DONE]\n\n"
 
                                         else:
-                                            # 没有工具调用,正常返回内容
-                                            # 处理思考结束和答案开始
-                                            if edit_content and "</details>\n" in edit_content:
-                                                if has_thinking:
-                                                    # 发送思考签名
-                                                    thinking_signature = str(int(time.time() * 1000))
-                                                    sig_chunk = self.create_openai_chunk(
-                                                        chat_id,
-                                                        model,
-                                                        {
-                                                            "role": "assistant",
-                                                            "thinking": {
-                                                                "content": "",
-                                                                "signature": thinking_signature,
-                                                            }
-                                                        }
-                                                    )
-                                                    yield await self.format_sse_chunk(sig_chunk)
-
-                                                # 提取答案内容
-                                                cleaned_content = edit_content.split("</details>\n")[-1]
-
+                                            # 没有工具调用,流式内容已经在上面的增量输出中发送过了
+                                            # 这里只需要发送 finish 块即可,不要再次发送内容
                                             if not has_sent_role and not has_thinking:
                                                 role_chunk = self.create_openai_chunk(
                                                     chat_id,
@@ -939,17 +1023,6 @@ class ZAIProvider(BaseProvider):
                                                 )
                                                 yield await self.format_sse_chunk(role_chunk)
                                                 has_sent_role = True
-
-                                            if cleaned_content:
-                                                content_chunk = self.create_openai_chunk(
-                                                    chat_id,
-                                                    model,
-                                                    {
-                                                        "role": "assistant",
-                                                        "content": cleaned_content
-                                                    }
-                                                )
-                                                yield await self.format_sse_chunk(content_chunk)
 
                                             finish_chunk = self.create_openai_chunk(
                                                 chat_id,
