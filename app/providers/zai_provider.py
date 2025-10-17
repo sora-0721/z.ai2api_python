@@ -587,12 +587,8 @@ class ZAIProvider(BaseProvider):
         if is_advanced_search:
             mcp_servers.append("advanced-search")
             self.logger.info("🔍 检测到高级搜索模型，添加 advanced-search MCP 服务器")
-        elif is_search and "-4.5" in requested_model:
-            mcp_servers.append("deep-web-search")
-            self.logger.info("🔍 检测到搜索模型，添加 deep-web-search MCP 服务器")
 
-        # 构建上游请求体（chat_id 已在前面生成）
-
+        # 构建上游请求体
         body = {
             "stream": True,  # 总是使用流式
             "model": upstream_model_id,
