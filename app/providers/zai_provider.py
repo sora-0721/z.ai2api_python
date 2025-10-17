@@ -69,7 +69,7 @@ def get_zai_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
         "Cache-Control": "no-cache",
         "User-Agent": user_agent,
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "X-FE-Version": "prod-fe-1.0.98",
+        "X-FE-Version": "prod-fe-1.0.103",
         "Origin": "https://chat.z.ai",
     }
 
@@ -670,9 +670,11 @@ class ZAIProvider(BaseProvider):
             body["params"]["max_tokens"] = request.max_tokens
         
         # 构建请求头
-        headers = get_zai_dynamic_headers(chat_id)
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Signature": "",
+            "Content-Type": "application/json"
+        }
 
         # Dual-layer HMAC signing metadata and header
         user_id = _extract_user_id_from_token(token)
@@ -686,11 +688,14 @@ class ZAIProvider(BaseProvider):
             user_id=user_id,
             secret=secret,
         )
+        
         query_params = {
-            "timestamp": timestamp_ms,
+            "timestamp": str(timestamp_ms),
             "requestId": request_id,
             "user_id": user_id,
             "token": token or "",
+            "version": "1.0.103",
+            "platform": "web",
             "current_url": f"https://chat.z.ai/c/{chat_id}",
             "pathname": f"/c/{chat_id}",
             "signature_timestamp": timestamp_ms,

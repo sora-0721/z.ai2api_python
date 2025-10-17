@@ -88,7 +88,7 @@ class Settings(BaseSettings):
         "sec-ch-ua": '"Not;A=Brand";v="99", "Microsoft Edge";v="139", "Chromium";v="139"',
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
-        "X-FE-Version": "prod-fe-1.0.98",
+        "X-FE-Version": "prod-fe-1.0.103",
         "Origin": "https://chat.z.ai",
     }
 
