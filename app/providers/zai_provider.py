@@ -69,7 +69,7 @@ def get_zai_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
         "Cache-Control": "no-cache",
         "User-Agent": user_agent,
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "X-FE-Version": "prod-fe-1.0.98",
+        "X-FE-Version": "prod-fe-1.0.103",
         "Origin": "https://chat.z.ai",
     }
 
@@ -587,12 +587,8 @@ class ZAIProvider(BaseProvider):
         if is_advanced_search:
             mcp_servers.append("advanced-search")
             self.logger.info("🔍 检测到高级搜索模型，添加 advanced-search MCP 服务器")
-        elif is_search and "-4.5" in requested_model:
-            mcp_servers.append("deep-web-search")
-            self.logger.info("🔍 检测到搜索模型，添加 deep-web-search MCP 服务器")
 
-        # 构建上游请求体（chat_id 已在前面生成）
-
+        # 构建上游请求体
         body = {
             "stream": True,  # 总是使用流式
             "model": upstream_model_id,
@@ -674,9 +670,11 @@ class ZAIProvider(BaseProvider):
             body["params"]["max_tokens"] = request.max_tokens
         
         # 构建请求头
-        headers = get_zai_dynamic_headers(chat_id)
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Signature": "",
+            "Content-Type": "application/json"
+        }
 
         # Dual-layer HMAC signing metadata and header
         user_id = _extract_user_id_from_token(token)
@@ -690,11 +688,14 @@ class ZAIProvider(BaseProvider):
             user_id=user_id,
             secret=secret,
         )
+        
         query_params = {
-            "timestamp": timestamp_ms,
+            "timestamp": str(timestamp_ms),
             "requestId": request_id,
             "user_id": user_id,
             "token": token or "",
+            "version": "1.0.103",
+            "platform": "web",
             "current_url": f"https://chat.z.ai/c/{chat_id}",
             "pathname": f"/c/{chat_id}",
             "signature_timestamp": timestamp_ms,
