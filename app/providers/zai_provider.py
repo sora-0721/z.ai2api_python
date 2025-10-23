@@ -20,6 +20,7 @@ import random
 from datetime import datetime
 from typing import Dict, List, Any, Optional, AsyncGenerator, Union
 from app.utils.user_agent import get_random_user_agent
+from app.utils.fe_version import get_latest_fe_version
 from app.utils.signature import generate_signature
 from app.providers.base import BaseProvider, ProviderConfig
 from app.models.schemas import OpenAIRequest, Message
@@ -42,6 +43,7 @@ def get_zai_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
     browser_choices = ["chrome", "chrome", "chrome", "edge", "edge", "firefox", "safari"]
     browser_type = random.choice(browser_choices)
     user_agent = get_random_user_agent(browser_type)
+    fe_version = get_latest_fe_version()
 
     chrome_version = "139"
     edge_version = "139"
@@ -70,7 +72,7 @@ def get_zai_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
         "Cache-Control": "no-cache",
         "User-Agent": user_agent,
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "X-FE-Version": "prod-fe-1.0.106",
+        "X-FE-Version": fe_version,
         "Origin": "https://chat.z.ai",
     }
 
@@ -636,6 +638,7 @@ class ZAIProvider(BaseProvider):
         user_id = _extract_user_id_from_token(token)
         timestamp_ms = int(time.time() * 1000)
         request_id = generate_uuid()
+        fe_version = get_latest_fe_version()
         try:
             signing_metadata = f"requestId,{request_id},timestamp,{timestamp_ms},user_id,{user_id}"
             prompt_for_signature = last_user_text or ""
@@ -650,11 +653,11 @@ class ZAIProvider(BaseProvider):
             logger.error(f"[Z.AI] 签名生成失败: {e}")
             signature = ""
 
-        # 构建请求头 (匹配 X-FE-Version 和 X-Signature)
+        # 构建请求头
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "X-FE-Version": "prod-fe-1.0.106",
+            "X-FE-Version": fe_version,
             "X-Signature": signature,
         }
 

@@ -56,7 +56,6 @@ def setup_logger(log_dir, log_retention_days=7, log_rotation="1 day", debug_mode
                 enqueue=True,
                 catch=True,
             )
-            logger.info(f"✅ 日志文件输出已启用: {log_dir}")
         except (PermissionError, OSError) as e:
             # 如果无法创建日志目录或文件，降级为仅控制台输出
             logger.warning(f"⚠️ 无法创建日志文件 ({e})，将仅使用控制台输出")
