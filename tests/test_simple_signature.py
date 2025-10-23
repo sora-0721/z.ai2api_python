@@ -1,81 +1,36 @@
-import time, hmac, hashlib, requests, uuid, json, base64
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
-token = ""
+"""
+简单测试签名工具
+"""
 
-def decode_jwt_payload(token):
-    parts = token.split('.')
-    payload = parts[1]
-    padding = 4 - len(payload) % 4
-    if padding != 4:
-        payload += '=' * padding
-    decoded = base64.urlsafe_b64decode(payload)
-    return json.loads(decoded)
+import sys
+import os
 
-def zs(e, t, timestamp):
-    r = str(timestamp)
-    t_encoded = base64.b64encode(t.encode('utf-8')).decode('utf-8')
-    i = f"{e}|{t_encoded}|{r}"
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    n = timestamp // (5 * 60 * 1000)
-    key = "junjie".encode('utf-8')
-    o = hmac.new(key, str(n).encode('utf-8'), hashlib.sha256).hexdigest()
-    signature = hmac.new(o.encode('utf-8'), i.encode('utf-8'), hashlib.sha256).hexdigest()
+# 直接导入签名模块，避免导入整个应用
+import importlib.util
+spec = importlib.util.spec_from_file_location("signature", os.path.join(os.path.dirname(os.path.dirname(__file__)), "app/utils/signature.py"))
+signature_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(signature_module)
 
-    return {"signature": signature, "timestamp": timestamp}
+generate_signature = signature_module.generate_signature
 
-# 使用最小参数测试
-payload_jwt = decode_jwt_payload(token)
-user_id = payload_jwt['id']
-chat_id = str(uuid.uuid4())
-timestamp = int(time.time() * 1000)
-request_id = str(uuid.uuid4())
-message = "hello"
 
-# Generate signature
-e = f"requestId,{request_id},timestamp,{timestamp},user_id,{user_id}"
-result = zs(e, message, timestamp)
-signature = result["signature"]
-
-print(f"Timestamp: {timestamp}")
-print(f"Request ID: {request_id}")
-print(f"Signature: {signature}")
-print()
-
-# 最小化 URL 参数
-from urllib.parse import urlencode
-params = {
-    "timestamp": str(timestamp),
-    "requestId": request_id,
-    "user_id": user_id,
-    "token": token,
-    "version": "0.0.1",
-    "platform": "web",
-}
-
-base_url = "https://chat.z.ai/api/chat/completions"
-url_params = urlencode(params)
-url = f"{base_url}?{url_params}&signature_timestamp={timestamp}"
-
-headers = {
-    "Authorization": f"Bearer {token}",
-    "X-Signature": signature,
-    "Content-Type": "application/json"
-}
-
-body_payload = {
-    "signature_prompt": message,
-    "stream": False,
-    "model": "GLM-4-6-API-V1",
-    "messages": [{"role": "user", "content": message}],
-    "chat_id": chat_id,
-    "id": str(uuid.uuid4())
-}
-
-print(f"URL: {url}")
-print(f"Headers: {json.dumps(headers, indent=2)}")
-print(f"Body: {json.dumps(body_payload, indent=2)}")
-print()
-
-response = requests.post(url, headers=headers, json=body_payload)
-print(f"Status: {response.status_code}")
-print(f"Response: {response.text}")
+if __name__ == "__main__":
+    # 示例用法
+    e_value = "requestId,eef12d6c-6dc9-47a0-aae8-b9f3454f98c5,timestamp,1761038714733,user_id,21ea9ec3-e492-4dbb-b522-fc0eaf64f0f6"
+    t_value = "hi"
+    r_value = 1761038714733
+    result = generate_signature(e_value, t_value, r_value)
+    print(f"生成的签名: {result['signature']}")
+    print(f"时间戳: {result['timestamp']}")
+    
+    # 验证函数是否正常工作
+    assert "signature" in result
+    assert "timestamp" in result
+    assert result["timestamp"] == str(r_value)
+    print("签名函数测试通过！")

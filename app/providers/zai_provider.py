@@ -20,6 +20,7 @@ import random
 from datetime import datetime
 from typing import Dict, List, Any, Optional, AsyncGenerator, Union
 from app.utils.user_agent import get_random_user_agent
+from app.utils.signature import generate_signature
 from app.providers.base import BaseProvider, ProviderConfig
 from app.models.schemas import OpenAIRequest, Message
 from app.core.config import settings
@@ -69,7 +70,7 @@ def get_zai_dynamic_headers(chat_id: str = "") -> Dict[str, str]:
         "Cache-Control": "no-cache",
         "User-Agent": user_agent,
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "X-FE-Version": "prod-fe-1.0.104",
+        "X-FE-Version": "prod-fe-1.0.106",
         "Origin": "https://chat.z.ai",
     }
 
@@ -116,45 +117,6 @@ def _extract_user_id_from_token(token: str) -> str:
             return str(val)
     return "guest"
 
-
-def generate_signature(message_text: str, request_id: str, timestamp_ms: int, user_id: str = "", secret: str = "") -> str:
-    """Dual-layer HMAC-SHA256 signature matching Z.AI's zs function.
-
-    New algorithm (2025):
-    - e: request_id (just the UUID string)
-    - t: message_text
-    - i: timestamp_ms (as string)
-    - w: base64(utf8_encode(t))
-    - c: e|w|i
-    - E: floor(timestamp_ms / (5 * 60 * 1000))
-    - A: HMAC_SHA256(secret, E)
-    - signature: HMAC_SHA256(A, c)
-    """
-    # e = request_id (simplified from previous complex format)
-    e = request_id
-
-    # t = message_text, encode to UTF-8 then base64 (matching btoa behavior)
-    t = message_text or ""
-    t_bytes = t.encode('utf-8')
-    w = base64.b64encode(t_bytes).decode('ascii')
-
-    # i = timestamp string
-    i = str(timestamp_ms)
-
-    # c = e|w|i
-    c = f"{e}|{w}|{i}"
-
-    # E = floor(timestamp_ms / (5 * 60 * 1000))
-    window_index = timestamp_ms // (5 * 60 * 1000)
-
-    # A = HMAC_SHA256(secret, window_index)
-    root_key = secret.encode("utf-8")
-    derived_hex = hmac.new(root_key, str(window_index).encode("utf-8"), hashlib.sha256).hexdigest()
-
-    # signature = HMAC_SHA256(A, c)
-    signature = hmac.new(derived_hex.encode("utf-8"), c.encode("utf-8"), hashlib.sha256).hexdigest()
-
-    return signature
 
 
 class ZAIProvider(BaseProvider):
@@ -337,7 +299,7 @@ class ZAIProvider(BaseProvider):
 
             self.logger.debug(f"📤 上传图片: {filename}, 大小: {len(image_data)} bytes")
 
-            # 构建上传请求 - 使用简化的请求头配置
+            # 构建上传请求
             upload_url = f"{self.base_url}/api/v1/files/"
             headers = {
                 "Accept": "*/*",
@@ -674,16 +636,15 @@ class ZAIProvider(BaseProvider):
         user_id = _extract_user_id_from_token(token)
         timestamp_ms = int(time.time() * 1000)
         request_id = generate_uuid()
-        secret = os.getenv("ZAI_SIGNING_SECRET", "key-@@@@)))()((9))-xxxx&&&%%%%%") or "key-@@@@)))()((9))-xxxx&&&%%%%%"
-
         try:
-            signature = generate_signature(
-                message_text=last_user_text,
-                request_id=request_id,
-                timestamp_ms=timestamp_ms,
-                user_id=user_id,
-                secret=secret,
+            signing_metadata = f"requestId,{request_id},timestamp,{timestamp_ms},user_id,{user_id}"
+            prompt_for_signature = last_user_text or ""
+            signature_result = generate_signature(
+                e=signing_metadata,
+                t=prompt_for_signature,
+                s=timestamp_ms,
             )
+            signature = signature_result["signature"]
             logger.debug(f"[Z.AI] 生成签名成功: {signature[:16]}... (user_id={user_id}, request_id={request_id})")
         except Exception as e:
             logger.error(f"[Z.AI] 签名生成失败: {e}")
@@ -693,7 +654,7 @@ class ZAIProvider(BaseProvider):
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "X-FE-Version": "prod-fe-1.0.104",
+            "X-FE-Version": "prod-fe-1.0.106",
             "X-Signature": signature,
         }
 
