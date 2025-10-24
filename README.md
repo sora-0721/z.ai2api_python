@@ -1,4 +1,4 @@
-# OpenAI 代理服务 (已失效 R.I.P)
+# OpenAI 代理服务
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python: 3.9-3.12](https://img.shields.io/badge/python-3.9--3.12-green.svg)
